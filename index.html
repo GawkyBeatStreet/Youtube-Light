@@ -241,7 +241,7 @@
         </div>
         <div class="banner-stats">
           <div class="mini-stat">
-            <span class="mini-stat-value" id="stat-blocked-shorts">5</span>
+            <span class="mini-stat-value" id="stat-blocked-shorts">0</span>
             <span class="mini-stat-label">Shorts blockiert</span>
           </div>
           <div class="mini-stat">
@@ -258,6 +258,15 @@
           <button id="btn-reset-goals" class="btn-link">Alle auswählen</button>
         </div>
         <div id="learning-goals-chips" class="goals-chips"></div>
+        <form id="form-add-goal" class="add-goal-row">
+          <input
+            type="text"
+            id="input-new-goal"
+            class="search-input"
+            placeholder="Neues Interesse hinzufügen (z. B. KI-Agenten, Design, Psychologie)…"
+          />
+          <button type="submit" class="btn btn-secondary">+ Interesse</button>
+        </form>
       </div>
 
       <!-- Such- und Informationsdichte-Filter -->
@@ -401,7 +410,7 @@
         </div>
         <div class="kpi-card">
           <span class="kpi-label">Abgewehrte Ablenkungen</span>
-          <span class="kpi-value" id="kpi-blocked-count">5 Shorts + 100% Endscreens</span>
+          <span class="kpi-value" id="kpi-blocked-count">0 Shorts + 100% Endscreens</span>
           <span class="kpi-sub">Keine Auto-Vorschläge im Video-Player</span>
         </div>
       </div>
@@ -414,6 +423,7 @@
             <div class="legend">
               <span class="legend-item"><i class="dot emerald"></i> Lernen</span>
               <span class="legend-item"><i class="dot amber"></i> Unterhaltung</span>
+              <button type="button" id="btn-reset-stats" class="btn-link">Zurücksetzen</button>
             </div>
           </div>
           <div id="weekly-chart" class="weekly-chart"></div>
@@ -471,9 +481,10 @@
             <option value="learning">🎓 Lernen</option>
             <option value="entertainment">🍿 Unterhaltung</option>
           </select>
-          <input type="text" id="new-channel-topic" placeholder="Thema (z. B. Finanzen & Makro)" />
+          <input type="text" id="new-channel-topic" list="goal-topics-datalist" placeholder="Thema (z. B. Finanzen & Makro)" />
           <button type="submit" class="btn btn-primary">+ Hinzufügen</button>
         </form>
+        <datalist id="goal-topics-datalist"></datalist>
       </div>
 
       <div id="channel-manager-list" class="channel-manager-grid"></div>

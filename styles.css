@@ -1715,3 +1715,70 @@ body.calm-thumbnails .video-card:hover .video-thumb img {
   border-radius: 5px;
   color: var(--text-primary);
 }
+
+/* Eigene Interessen & Kanal-Themen */
+.add-goal-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+
+.add-goal-row .search-input {
+  flex: 1;
+  min-width: 220px;
+}
+
+.goal-chip-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.goal-chip-remove {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: #ffffff;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.goal-chip-remove:hover {
+  background: #ffeceb;
+  color: #c9342a;
+  border-color: rgba(255, 59, 48, 0.35);
+}
+
+.channel-topic-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.channel-topic-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+}
+
+.channel-topic-input:focus {
+  outline: none;
+  border-color: var(--apple-blue);
+  background: #ffffff;
+}

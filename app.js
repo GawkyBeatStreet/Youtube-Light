@@ -2,7 +2,6 @@ import {
   LEARNING_GOALS,
   INITIAL_CHANNELS,
   INITIAL_VIDEOS,
-  BLOCKED_SHORTS_SAMPLE,
   calmTitleTransform
 } from './data.js';
 
@@ -69,26 +68,31 @@ function getCurrentWeekDates() {
   });
 }
 
-function seedCurrentWeekLogs(existingLogs = {}) {
+const LEGACY_SEEDED_DAY_PAIRS = new Set([
+  '2520:720',
+  '3300:1080',
+  '2280:600',
+  '3840:900',
+  '2940:1140',
+  '1920:840'
+]);
+
+function prepareDailyLogs(existingLogs = {}, alreadyCleaned = false) {
   const logs = { ...existingLogs };
-  const week = getCurrentWeekDates();
-  const baseline = [
-    { learningSec: 42 * 60, entertainmentSec: 12 * 60 },
-    { learningSec: 55 * 60, entertainmentSec: 18 * 60 },
-    { learningSec: 38 * 60, entertainmentSec: 10 * 60 },
-    { learningSec: 64 * 60, entertainmentSec: 15 * 60 },
-    { learningSec: 49 * 60, entertainmentSec: 19 * 60 },
-    { learningSec: 32 * 60, entertainmentSec: 14 * 60 },
-    { learningSec: 0, entertainmentSec: 0 }
-  ];
-
-  week.forEach((dayInfo, idx) => {
-    if (!logs[dayInfo.key] && !dayInfo.isToday && !dayInfo.isFuture) {
-      logs[dayInfo.key] = { ...baseline[idx] };
-    }
-  });
-
   const today = getDateKey();
+
+  if (!alreadyCleaned) {
+    Object.keys(logs).forEach((dateKey) => {
+      if (dateKey === today) return;
+      const entry = logs[dateKey];
+      if (!entry) return;
+      const sig = `${entry.learningSec}:${entry.entertainmentSec}`;
+      if (LEGACY_SEEDED_DAY_PAIRS.has(sig)) {
+        delete logs[dateKey];
+      }
+    });
+  }
+
   if (!logs[today]) {
     logs[today] = { learningSec: 0, entertainmentSec: 0 };
   }
@@ -134,9 +138,11 @@ function loadState() {
     hideWatchedDefaultV2: true,
     densityPreference: 'dense',
     activeGoals: LEARNING_GOALS.map((g) => g.id),
+    customGoals: [],
     channels: INITIAL_CHANNELS.map((c) => ({ ...c })),
     videos: INITIAL_VIDEOS.map((v) => ({ ...v })),
     watchedIds: [],
+    blockedShorts: [],
     notesByVideo: {},
     aiSummaries: {},
     discoveryResults: [],
@@ -146,7 +152,8 @@ function loadState() {
       learningGoalMin: 45,
       entertainmentLimitMin: 20
     },
-    dailyLogs: seedCurrentWeekLogs(),
+    realStatsV1: true,
+    dailyLogs: prepareDailyLogs({}, true),
     obsidianConfig: {
       vaultName: '',
       folder: 'YouTube'
@@ -174,11 +181,14 @@ function loadState() {
       ...parsed,
       hideWatched: parsed.hideWatchedDefaultV2 ? parsed.hideWatched : true,
       hideWatchedDefaultV2: true,
+      customGoals: Array.isArray(parsed.customGoals) ? parsed.customGoals : [],
+      blockedShorts: Array.isArray(parsed.blockedShorts) ? parsed.blockedShorts : [],
       budgets: { ...fallback.budgets, ...(parsed.budgets || {}) },
       obsidianConfig: { ...fallback.obsidianConfig, ...(parsed.obsidianConfig || {}) },
       playerPrefs: { ...fallback.playerPrefs, ...(parsed.playerPrefs || {}) },
       apiConfig: mergedApiConfig,
-      dailyLogs: seedCurrentWeekLogs(parsed.dailyLogs || {})
+      realStatsV1: true,
+      dailyLogs: prepareDailyLogs(parsed.dailyLogs || {}, Boolean(parsed.realStatsV1))
     };
   } catch {
     return fallback;
@@ -226,6 +236,8 @@ const els = {
   toggleHideWatched: document.getElementById('toggle-hide-watched'),
   learningGoalsChips: document.getElementById('learning-goals-chips'),
   btnResetGoals: document.getElementById('btn-reset-goals'),
+  formAddGoal: document.getElementById('form-add-goal'),
+  inputNewGoal: document.getElementById('input-new-goal'),
   algoSearchInput: document.getElementById('algo-search-input'),
   algoDensityMode: document.getElementById('algo-density-mode'),
   algoDurationFilter: document.getElementById('algo-duration-filter'),
@@ -298,7 +310,9 @@ const els = {
   kpiTodayLearning: document.getElementById('kpi-today-learning'),
   kpiWeekEntertainment: document.getElementById('kpi-week-entertainment'),
   kpiTodayEntertainment: document.getElementById('kpi-today-entertainment'),
+  kpiBlockedCount: document.getElementById('kpi-blocked-count'),
   weeklyChart: document.getElementById('weekly-chart'),
+  btnResetStats: document.getElementById('btn-reset-stats'),
   inputLearningGoal: document.getElementById('input-learning-goal'),
   inputEntertainmentLimit: document.getElementById('input-entertainment-limit'),
   btnSaveBudgets: document.getElementById('btn-save-budgets'),
@@ -311,6 +325,7 @@ const els = {
   newChannelHandle: document.getElementById('new-channel-handle'),
   newChannelCategory: document.getElementById('new-channel-category'),
   newChannelTopic: document.getElementById('new-channel-topic'),
+  goalTopicsDatalist: document.getElementById('goal-topics-datalist'),
   channelManagerList: document.getElementById('channel-manager-list'),
   // Notes
   notesCountBadge: document.getElementById('notes-count-badge'),
@@ -388,11 +403,85 @@ function computeDensityBonus(durationSec, pref = state.densityPreference || 'den
   return 4;
 }
 
+function getAllGoals() {
+  return [...LEARNING_GOALS.map((g) => ({ ...g, isCustom: false })), ...(state.customGoals || []).map((g) => ({ ...g, isCustom: true }))];
+}
+
+function addCustomGoal(rawLabel) {
+  const label = String(rawLabel || '').trim().slice(0, 50);
+  if (!label) return false;
+  const all = getAllGoals();
+  const existing = all.find(
+    (g) => g.id.toLowerCase() === label.toLowerCase() || g.label.toLowerCase() === label.toLowerCase()
+  );
+
+  if (existing) {
+    if (!state.activeGoals.includes(existing.id)) {
+      state.activeGoals.push(existing.id);
+      saveState();
+    }
+    return true;
+  }
+
+  const newGoal = {
+    id: label,
+    label,
+    description: `Eigenes Interesse: ${label}`,
+    isCustom: true
+  };
+  state.customGoals = [...(state.customGoals || []), newGoal];
+  state.activeGoals = [...(state.activeGoals || []), newGoal.id];
+  saveState();
+  return true;
+}
+
+function removeCustomGoal(goalId) {
+  state.customGoals = (state.customGoals || []).filter((g) => g.id !== goalId);
+  state.activeGoals = (state.activeGoals || []).filter((id) => id !== goalId);
+  saveState();
+}
+
+function recordBlockedShort({ id, title, channelName, durationSec }) {
+  if (!id) return;
+  const current = Array.isArray(state.blockedShorts) ? state.blockedShorts : [];
+  if (current.some((item) => item.id === id)) return;
+  state.blockedShorts = [
+    {
+      id,
+      title: title || 'YouTube Short',
+      channelName: channelName || 'Unbekannter Kanal',
+      durationSec: Math.max(1, Math.round(durationSec || 0)),
+      blockedAt: new Date().toLocaleDateString('de-DE')
+    },
+    ...current
+  ].slice(0, 50);
+  saveState();
+}
+
+function matchesActiveGoals(video) {
+  const active = state.activeGoals || [];
+  if (active.length === 0) return false;
+  if (active.includes(video.topic)) return true;
+
+  const haystack = `${video.originalTitle || ''} ${video.calmTitle || ''} ${video.topic || ''} ${video.channelName || ''}`.toLowerCase();
+  const goalMap = new Map(getAllGoals().map((g) => [g.id, g.label]));
+
+  return active.some((goalId) => {
+    const label = goalMap.get(goalId) || goalId;
+    const tokens = String(label)
+      .toLowerCase()
+      .split(/[\s,&/\-–]+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length >= 3);
+    return tokens.some((tok) => haystack.includes(tok));
+  });
+}
+
 function computeFocusScore(video) {
   const base = getChannelQualityBase(video.channelHandle);
   const chapters = Array.isArray(video.chapters) ? video.chapters : [];
   const hasChapters = chapters.length >= 2;
-  const goalMatch = state.activeGoals.includes(video.topic);
+  const goalMatch = matchesActiveGoals(video);
 
   if (state.mode === 'entertainment') {
     const chapterBonus = hasChapters ? 10 : 0;
@@ -1134,15 +1223,32 @@ function setTab(tabName) {
   if (tabName === 'notes') renderAllNotesTab();
 }
 
+function renderGoalTopicsDatalist() {
+  if (!els.goalTopicsDatalist) return;
+  const all = getAllGoals();
+  els.goalTopicsDatalist.innerHTML = all
+    .map((g) => `<option value="${escapeHtml(g.id)}">${escapeHtml(g.label)}</option>`)
+    .join('');
+}
+
 function renderLearningGoals() {
-  els.learningGoalsChips.innerHTML = LEARNING_GOALS.map((goal) => {
-    const active = state.activeGoals.includes(goal.id);
-    return `
-      <button class="goal-chip ${active ? 'active' : ''}" data-goal-id="${escapeHtml(goal.id)}" title="${escapeHtml(goal.description)}">
-        ${active ? '✓ ' : ''}${escapeHtml(goal.label)}
-      </button>
-    `;
-  }).join('');
+  els.learningGoalsChips.innerHTML = getAllGoals()
+    .map((goal) => {
+      const active = state.activeGoals.includes(goal.id);
+      const chipBtn = `
+        <button type="button" class="goal-chip ${active ? 'active' : ''}" data-goal-id="${escapeHtml(goal.id)}" title="${escapeHtml(goal.description || goal.label)}">
+          ${active ? '✓ ' : ''}${escapeHtml(goal.label)}
+        </button>
+      `;
+      if (!goal.isCustom) return chipBtn;
+      return `
+        <span class="goal-chip-wrap">
+          ${chipBtn}
+          <button type="button" class="goal-chip-remove" data-remove-goal="${escapeHtml(goal.id)}" title="Eigenes Interesse entfernen">×</button>
+        </span>
+      `;
+    })
+    .join('');
 
   els.learningGoalsChips.querySelectorAll('.goal-chip').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -1154,6 +1260,16 @@ function renderLearningGoals() {
       }
       saveState();
       renderLearningGoals();
+      renderVideoViews();
+    });
+  });
+
+  els.learningGoalsChips.querySelectorAll('[data-remove-goal]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      removeCustomGoal(btn.dataset.removeGoal);
+      renderLearningGoals();
+      renderDiscoverGoalPills();
+      renderGoalTopicsDatalist();
       renderVideoViews();
     });
   });
@@ -1234,7 +1350,7 @@ function renderVideoViews() {
     els.entertainmentLockNotice.classList.add('hidden');
     const algoVideos = getFilteredVideos({ applyFloodBrake: true, sortByScore: true });
     els.statLearningCount.textContent = String(algoVideos.length);
-    els.statBlockedShorts.textContent = String(BLOCKED_SHORTS_SAMPLE.length);
+    els.statBlockedShorts.textContent = String((state.blockedShorts || []).length);
 
     if (algoVideos.length === 0) {
       els.algorithmVideoGrid.innerHTML = `<div class="panel-card"><h3>Keine Treffer für diesen Filter</h3><p class="panel-hint">Passe deine Lernziele, Suche oder Videolänge an.</p></div>`;
@@ -1334,14 +1450,27 @@ function renderDashboard() {
   els.inputLearningGoal.value = String(state.budgets.learningGoalMin);
   els.inputEntertainmentLimit.value = String(state.budgets.entertainmentLimitMin);
 
-  els.blockedShortsList.innerHTML = BLOCKED_SHORTS_SAMPLE.map(
-    (s) => `
+  const blocked = state.blockedShorts || [];
+  if (els.kpiBlockedCount) {
+    els.kpiBlockedCount.textContent = `${blocked.length} Shorts + 100% Endscreens`;
+  }
+
+  if (blocked.length === 0) {
+    els.blockedShortsList.innerHTML =
+      '<li><small>Noch keine Shorts in geladenen YouTube-Feeds aufgetaucht — der Shorts-Filter (&lt; 60 Sek.) ist aktiv.</small></li>';
+  } else {
+    els.blockedShortsList.innerHTML = blocked
+      .slice(0, 8)
+      .map(
+        (s) => `
       <li>
         <strong>${escapeHtml(s.title)}</strong>
-        <small>${escapeHtml(s.views)} · ${escapeHtml(s.reason)}</small>
+        <small>${escapeHtml(s.channelName)} · ${escapeHtml(String(s.durationSec))}s Short blockiert (${escapeHtml(s.blockedAt || '')})</small>
       </li>
     `
-  ).join('');
+      )
+      .join('');
+  }
 }
 
 // --- ABO-MANAGER ---
@@ -1371,6 +1500,17 @@ function renderChannelManager() {
           </span>
         </div>
         <p class="channel-desc">${escapeHtml(ch.description || 'Abonnierter YouTube-Kanal')}</p>
+        <div class="channel-topic-row">
+          <input
+            type="text"
+            class="channel-topic-input"
+            list="goal-topics-datalist"
+            data-channel-topic="${escapeHtml(ch.handle)}"
+            value="${escapeHtml(ch.topic || '')}"
+            placeholder="Interesse / Thema zuordnen…"
+            title="Thema oder Interesse für diesen Kanal anpassen"
+          />
+        </div>
         <div class="channel-controls">
           <select data-channel-category="${escapeHtml(ch.handle)}" class="select-input">
             <option value="learning" ${ch.category === 'learning' ? 'selected' : ''}>🎓 Lernen</option>
@@ -1395,6 +1535,24 @@ function renderChannelManager() {
     `
     )
     .join('');
+
+  els.channelManagerList.querySelectorAll('[data-channel-topic]').forEach((inp) => {
+    inp.addEventListener('change', () => {
+      const handle = inp.dataset.channelTopic;
+      const newTopic = inp.value.trim() || 'Allgemein & Wissen';
+      const target = state.channels.find((c) => c.handle === handle);
+      if (target) {
+        target.topic = newTopic;
+        state.videos.forEach((v) => {
+          if (v.channelHandle === handle) v.topic = newTopic;
+        });
+        saveState();
+        renderChannelManager();
+        renderFeedChannelFilter();
+        renderVideoViews();
+      }
+    });
+  });
 
   els.channelManagerList.querySelectorAll('[data-channel-category]').forEach((sel) => {
     sel.addEventListener('change', () => {
@@ -1627,7 +1785,15 @@ async function fetchLiveUploadsViaUuTrick() {
       const d = detailMap[base.id];
       if (!d) return;
       const durationSec = parseIsoDuration(d.contentDetails?.duration || '');
-      if (durationSec > 0 && durationSec < 60) return; // Shorts herausfiltern
+      if (durationSec > 0 && durationSec < 60) {
+        recordBlockedShort({
+          id: base.id,
+          title: d.snippet?.title || 'YouTube Short',
+          channelName: base.channelName,
+          durationSec
+        });
+        return; // Shorts herausfiltern
+      }
 
       const rawTitle = d.snippet?.title || '';
       const chapters = extractChaptersFromDescription(d.snippet?.description || '');
@@ -1965,9 +2131,11 @@ async function generateAiSummaryForActiveVideo() {
 // --- WISSENS-ENTDECKER (GEMINI + YOUTUBE DISCOVERY AUSSERHALB DER ABOS) ---
 function renderDiscoverGoalPills() {
   if (!els.discoverGoalPills) return;
-  els.discoverGoalPills.innerHTML = LEARNING_GOALS.map(
-    (g) => `<button type="button" class="goal-chip" data-discover-goal="${escapeHtml(g.label)}">${escapeHtml(g.label)}</button>`
-  ).join('');
+  els.discoverGoalPills.innerHTML = getAllGoals()
+    .map(
+      (g) => `<button type="button" class="goal-chip" data-discover-goal="${escapeHtml(g.label)}">${escapeHtml(g.label)}</button>`
+    )
+    .join('');
 
   els.discoverGoalPills.querySelectorAll('[data-discover-goal]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -2300,6 +2468,15 @@ async function runKnowledgeDiscovery() {
       })
       .filter((v) => {
         if ((state.watchedIds || []).includes(v.id)) return false;
+        if (v.durationSec > 0 && v.durationSec < 60) {
+          recordBlockedShort({
+            id: v.id,
+            title: v.originalTitle,
+            channelName: v.channelName,
+            durationSec: v.durationSec
+          });
+          return false;
+        }
         if (v.durationSec < 240) return false; // < 4 Min. herausfiltern (Shorts & Snippets)
         if (lengthPref === 'compact' && v.durationSec > 1680) return false; // > 28 Min. herausfiltern bei Kompakt-Präferenz
         if (lengthPref === 'medium' && v.durationSec > 2700) return false;
@@ -2509,11 +2686,39 @@ function bindEvents() {
 
   // Lernziele, Informationsdichte & Suche
   els.btnResetGoals.addEventListener('click', () => {
-    state.activeGoals = LEARNING_GOALS.map((g) => g.id);
+    state.activeGoals = getAllGoals().map((g) => g.id);
     saveState();
     renderLearningGoals();
     renderVideoViews();
   });
+
+  if (els.formAddGoal) {
+    els.formAddGoal.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const raw = (els.inputNewGoal?.value || '').trim();
+      if (!raw) return;
+      if (addCustomGoal(raw)) {
+        els.inputNewGoal.value = '';
+        renderLearningGoals();
+        renderDiscoverGoalPills();
+        renderGoalTopicsDatalist();
+        renderVideoViews();
+      }
+    });
+  }
+
+  if (els.btnResetStats) {
+    els.btnResetStats.addEventListener('click', () => {
+      state.dailyLogs = {
+        [getDateKey()]: { learningSec: 0, entertainmentSec: 0 }
+      };
+      state.blockedShorts = [];
+      saveState();
+      updateTimerUI();
+      renderDashboard();
+      renderVideoViews();
+    });
+  }
 
   if (els.algoDensityMode) {
     els.algoDensityMode.addEventListener('change', () => {
@@ -2820,6 +3025,7 @@ function bindEvents() {
 function renderAllViews() {
   renderLearningGoals();
   renderDiscoverGoalPills();
+  renderGoalTopicsDatalist();
   renderDiscoveryResults();
   renderFeedChannelFilter();
   renderVideoViews();
