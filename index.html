@@ -292,6 +292,7 @@
           <input type="checkbox" id="toggle-hide-watched" checked />
           <span>Gesehene ausblenden</span>
         </label>
+        <button type="button" id="btn-refresh-algo" class="btn btn-secondary" title="Neueste Videos deiner abonnierten Kanäle live abrufen">🔄 Aktualisieren</button>
       </div>
 
       <div id="entertainment-lock-notice" class="lock-screen hidden"></div>
@@ -370,6 +371,8 @@
           </p>
         </div>
         <div class="feed-controls">
+          <span id="feed-sync-meta" class="panel-hint"></span>
+          <button type="button" id="btn-refresh-feed" class="btn btn-secondary" title="Neueste Videos deiner abonnierten Kanäle live abrufen">🔄 Feed aktualisieren</button>
           <select id="feed-channel-filter" class="select-input">
             <option value="all">Alle Kanäle im aktuellen Modus</option>
           </select>

@@ -1843,3 +1843,10 @@ body.calm-thumbnails .video-card:hover .video-thumb img {
   border-color: var(--apple-blue);
   background: #ffffff;
 }
+
+.feed-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}

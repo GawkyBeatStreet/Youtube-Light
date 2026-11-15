@@ -154,6 +154,7 @@ function loadState() {
       entertainmentLimitMin: 20
     },
     realStatsV1: true,
+    lastFeedSyncAt: 0,
     dailyLogs: prepareDailyLogs({}, true),
     obsidianConfig: {
       vaultName: '',
@@ -248,6 +249,7 @@ const els = {
   algoSearchInput: document.getElementById('algo-search-input'),
   algoDensityMode: document.getElementById('algo-density-mode'),
   algoDurationFilter: document.getElementById('algo-duration-filter'),
+  btnRefreshAlgo: document.getElementById('btn-refresh-algo'),
   algorithmVideoGrid: document.getElementById('algorithm-video-grid'),
   entertainmentLockNotice: document.getElementById('entertainment-lock-notice'),
   // Wissens-Entdecker
@@ -265,6 +267,8 @@ const els = {
   feedLockNotice: document.getElementById('feed-lock-notice'),
   feedVideoGrid: document.getElementById('feed-video-grid'),
   feedChannelFilter: document.getElementById('feed-channel-filter'),
+  btnRefreshFeed: document.getElementById('btn-refresh-feed'),
+  feedSyncMeta: document.getElementById('feed-sync-meta'),
   feedModeDescription: document.getElementById('feed-mode-description'),
   statBlockedShorts: document.getElementById('stat-blocked-shorts'),
   statLearningCount: document.getElementById('stat-learning-count'),
@@ -546,7 +550,12 @@ function getFilteredVideos({ applyFloodBrake = true, sortByScore = true, channel
   if (sortByScore) {
     list.sort((a, b) => b.focusScore - a.focusScore);
   } else {
-    list.sort((a, b) => (a.publishedOrder ?? 999) - (b.publishedOrder ?? 999));
+    list.sort((a, b) => {
+      const tA = a.publishedAt ? Date.parse(a.publishedAt) || 0 : 0;
+      const tB = b.publishedAt ? Date.parse(b.publishedAt) || 0 : 0;
+      if (tA !== tB) return tB - tA;
+      return (a.publishedOrder ?? 999) - (b.publishedOrder ?? 999);
+    });
   }
 
   if (applyFloodBrake && state.floodBrake && channelFilter === 'all') {
@@ -1718,12 +1727,27 @@ function renderChannelManager() {
   });
 }
 
+function updateFeedSyncMetaUi() {
+  if (!els.feedSyncMeta) return;
+  if (!state.lastFeedSyncAt) {
+    els.feedSyncMeta.textContent = '';
+    return;
+  }
+  const timeStr = new Date(state.lastFeedSyncAt).toLocaleTimeString('de-DE', {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+  els.feedSyncMeta.textContent = `Stand: ${timeStr} Uhr`;
+}
+
 // --- GOOGLE OAUTH 2.0 & YOUTUBE DATA API V3 (UU-PLAYLIST-TRICK) ---
 function updateSyncUi() {
   const connected = Boolean(oauthAccessToken);
-  const hasAnyApi = connected || Boolean(state.apiConfig.apiKey || state.apiConfig.geminiKey);
+  const hasYtApi = connected || Boolean((state.apiConfig.apiKey || '').trim());
+  const hasAnyApi = hasYtApi || Boolean(state.apiConfig.geminiKey);
   els.syncStatusDot.className = `status-indicator ${hasAnyApi ? 'online' : 'offline'}`;
-  els.btnFetchUuUploads.disabled = !connected;
+  els.btnFetchUuUploads.disabled = !hasYtApi;
+  updateFeedSyncMetaUi();
   els.inputOauthClientId.value = state.apiConfig.clientId || '';
   els.inputYtApiKey.value = state.apiConfig.apiKey || '';
   if (els.inputGeminiApiKey) els.inputGeminiApiKey.value = state.apiConfig.geminiKey || '';
@@ -1868,62 +1892,113 @@ async function syncSubscriptionsFromApi() {
     renderChannelManager();
     renderFeedChannelFilter();
     renderVideoViews();
-    els.syncStatusText.textContent = `Synchronisiert! ${fetched.length} aktive Abos (+${added} neu, -${removed} deabonniert).`;
+    els.syncStatusText.textContent = `Synchronisiert! ${fetched.length} aktive Abos (+${added} neu, -${removed} deabonniert). Lade neueste Videos…`;
+    await fetchLiveUploadsViaUuTrick({ silent: true });
   } catch (err) {
     els.syncStatusText.textContent = err.message;
   }
 }
 
-async function fetchLiveUploadsViaUuTrick() {
-  const channelsWithId = state.channels.filter((c) => c.channelId && c.channelId.startsWith('UC') && c.category !== 'muted');
-  if (channelsWithId.length === 0) {
-    els.syncStatusText.textContent = 'Keine Kanäle mit UC-Channel-ID gefunden. Bitte zuerst Abos über Google anmelden & laden.';
+let isFeedRefreshing = false;
+
+function setFeedRefreshButtonsLoading(loading) {
+  const label = loading ? '⏳ Aktualisiere…' : '🔄 Aktualisieren';
+  if (els.btnRefreshAlgo) {
+    els.btnRefreshAlgo.disabled = loading;
+    els.btnRefreshAlgo.textContent = label;
+  }
+  if (els.btnRefreshFeed) {
+    els.btnRefreshFeed.disabled = loading;
+    els.btnRefreshFeed.textContent = loading ? '⏳ Aktualisiere…' : '🔄 Feed aktualisieren';
+  }
+  if (els.btnFetchUuUploads) {
+    els.btnFetchUuUploads.disabled = loading || !(oauthAccessToken || (state.apiConfig.apiKey || '').trim());
+  }
+}
+
+async function fetchLiveUploadsViaUuTrick({ silent = false } = {}) {
+  if (isFeedRefreshing) return;
+
+  const hasYtCreds = Boolean(oauthAccessToken || (state.apiConfig.apiKey || '').trim());
+  if (!hasYtCreds) {
+    if (!silent) {
+      updateSyncUi();
+      els.syncModal.classList.remove('hidden');
+      els.syncStatusText.textContent = 'Bitte zuerst deinen YouTube Data API v3 Key eintragen oder über Google anmelden.';
+    }
     return;
   }
 
-  els.syncStatusText.textContent = `Lade Uploads von ${channelsWithId.length} Kanälen via UU-Playlist-Trick (1 Quota-Unit/Kanal)…`;
+  const channelsWithId = state.channels.filter((c) => c.channelId && c.channelId.startsWith('UC') && c.category !== 'muted');
+  if (channelsWithId.length === 0) {
+    const msg = 'Keine synchronisierten Kanäle mit UC-Channel-ID gefunden. Bitte einmal „Live-Abos abgleichen“ ausführen.';
+    if (els.syncStatusText) els.syncStatusText.textContent = msg;
+    if (els.feedSyncMeta) els.feedSyncMeta.textContent = 'Erst Abos abgleichen';
+    return;
+  }
+
+  isFeedRefreshing = true;
+  setFeedRefreshButtonsLoading(true);
+  if (els.syncStatusText) {
+    els.syncStatusText.textContent = `Lade neueste Uploads von ${channelsWithId.length} Kanälen…`;
+  }
+  if (els.feedSyncMeta) {
+    els.feedSyncMeta.textContent = 'Aktualisiere…';
+  }
+
   try {
     const rawItems = [];
-    for (const ch of channelsWithId.slice(0, 20)) {
-      const uuPlaylistId = `UU${ch.channelId.slice(2)}`;
-      try {
-        const data = await ytApiFetch(
-          `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encodeURIComponent(
-            uuPlaylistId
-          )}&maxResults=3`
-        );
-        (data.items || []).forEach((it) => {
-          const vidId = it.contentDetails?.videoId || it.snippet?.resourceId?.videoId;
-          if (!vidId) return;
-          rawItems.push({
-            id: vidId,
-            channelHandle: ch.handle,
-            channelName: ch.name,
-            category: ch.category,
-            topic: ch.topic,
-            publishedAt: it.snippet?.publishedAt || ''
-          });
-        });
-      } catch {
-        // Einzelne leere Upload-Playlists überspringen
-      }
+    const batchSize = 5;
+    for (let i = 0; i < channelsWithId.length; i += batchSize) {
+      const slice = channelsWithId.slice(i, i + batchSize);
+      await Promise.all(
+        slice.map(async (ch) => {
+          const uuPlaylistId = `UU${ch.channelId.slice(2)}`;
+          try {
+            const data = await ytApiFetch(
+              `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encodeURIComponent(
+                uuPlaylistId
+              )}&maxResults=3`
+            );
+            (data.items || []).forEach((it) => {
+              const vidId = it.contentDetails?.videoId || it.snippet?.resourceId?.videoId;
+              if (!vidId) return;
+              rawItems.push({
+                id: vidId,
+                channelHandle: ch.handle,
+                channelName: ch.name,
+                category: ch.category,
+                topic: ch.topic,
+                publishedAt: it.snippet?.publishedAt || ''
+              });
+            });
+          } catch {
+            // Einzelne leere Upload-Playlists überspringen
+          }
+        })
+      );
     }
 
     if (rawItems.length === 0) {
-      els.syncStatusText.textContent = 'Keine neuen Uploads gefunden.';
+      if (els.syncStatusText) els.syncStatusText.textContent = 'Keine neuen Uploads gefunden.';
+      updateFeedSyncMetaUi();
       return;
     }
 
-    // Video-Details (Länge & Beschreibung für Kapitel) in einem Batch abfragen (1 Unit für bis zu 50 Videos)
-    const idsChunk = rawItems.slice(0, 50).map((v) => v.id).join(',');
-    const details = await ytApiFetch(
-      `https://www.googleapis.com/youtube/v3/videos?part=contentDetails,snippet&id=${encodeURIComponent(idsChunk)}`
-    );
-
+    // Video-Details (Länge & Beschreibung für Kapitel) in 50er-Batches abfragen
     const detailMap = {};
-    (details.items || []).forEach((d) => {
-      detailMap[d.id] = d;
-    });
+    for (let i = 0; i < rawItems.length; i += 50) {
+      const idsChunk = rawItems
+        .slice(i, i + 50)
+        .map((v) => v.id)
+        .join(',');
+      const details = await ytApiFetch(
+        `https://www.googleapis.com/youtube/v3/videos?part=contentDetails,snippet&id=${encodeURIComponent(idsChunk)}`
+      );
+      (details.items || []).forEach((d) => {
+        detailMap[d.id] = d;
+      });
+    }
 
     let importedCount = 0;
     rawItems.forEach((base, idx) => {
@@ -1942,6 +2017,7 @@ async function fetchLiveUploadsViaUuTrick() {
 
       const rawTitle = d.snippet?.title || '';
       const chapters = extractChaptersFromDescription(d.snippet?.description || '');
+      const publishedAt = base.publishedAt || d.snippet?.publishedAt || '';
       const videoObj = {
         id: base.id,
         originalTitle: rawTitle,
@@ -1950,7 +2026,8 @@ async function fetchLiveUploadsViaUuTrick() {
         channelName: base.channelName,
         durationSec,
         durationText: formatMMSS(durationSec),
-        publishedText: base.publishedAt ? new Date(base.publishedAt).toLocaleDateString('de-DE') : 'Aktuell',
+        publishedAt,
+        publishedText: publishedAt ? new Date(publishedAt).toLocaleDateString('de-DE') : 'Aktuell',
         publishedOrder: -100 + idx,
         category: base.category,
         topic: base.topic,
@@ -1971,11 +2048,19 @@ async function fetchLiveUploadsViaUuTrick() {
       }
     });
 
+    state.lastFeedSyncAt = Date.now();
     saveState();
     renderVideoViews();
-    els.syncStatusText.textContent = `Fertig! ${importedCount} neue Live-Videos ohne Shorts importiert.`;
+    updateFeedSyncMetaUi();
+    if (els.syncStatusText) {
+      els.syncStatusText.textContent = `Fertig! ${importedCount} neue Live-Videos ohne Shorts importiert (${channelsWithId.length} Kanäle geprüft).`;
+    }
   } catch (err) {
-    els.syncStatusText.textContent = err.message;
+    if (els.syncStatusText) els.syncStatusText.textContent = err.message;
+    if (els.feedSyncMeta) els.feedSyncMeta.textContent = 'Fehler beim Abruf (API Key prüfen)';
+  } finally {
+    isFeedRefreshing = false;
+    setFeedRefreshButtonsLoading(false);
   }
 }
 
@@ -3192,7 +3277,13 @@ function bindEvents() {
     els.btnSyncSubsNow.addEventListener('click', triggerGoogleLoginOrSync);
   }
 
-  els.btnFetchUuUploads.addEventListener('click', fetchLiveUploadsViaUuTrick);
+  els.btnFetchUuUploads.addEventListener('click', () => fetchLiveUploadsViaUuTrick({ silent: false }));
+  if (els.btnRefreshFeed) {
+    els.btnRefreshFeed.addEventListener('click', () => fetchLiveUploadsViaUuTrick({ silent: false }));
+  }
+  if (els.btnRefreshAlgo) {
+    els.btnRefreshAlgo.addEventListener('click', () => fetchLiveUploadsViaUuTrick({ silent: false }));
+  }
 }
 
 function renderAllViews() {
@@ -3216,6 +3307,14 @@ async function init() {
   setTab(state.activeTab);
   renderAllViews();
   loadYouTubeIframeApi();
+
+  // Automatische Feed-Aktualisierung beim Start (wenn API-Key vorhanden & letzter Abruf > 30 Min.)
+  const hasApiKey = Boolean((state.apiConfig.apiKey || '').trim());
+  const hasSyncChannels = state.channels.some((c) => c.channelId && c.channelId.startsWith('UC') && c.category !== 'muted');
+  const stale = Date.now() - (state.lastFeedSyncAt || 0) > 30 * 60 * 1000;
+  if (hasApiKey && hasSyncChannels && stale) {
+    fetchLiveUploadsViaUuTrick({ silent: true });
+  }
 }
 
 init();
