@@ -445,10 +445,13 @@
         <div>
           <h1>Abo-Manager (@henningp.8303)</h1>
           <p>
-            Ordne jeden deiner Kanäle zwischen <strong>Lernen</strong>, <strong>Unterhaltung</strong> oder <strong>Stummgeschaltet</strong> zu — oder abonniere direkt neue Kanäle per YouTube-API.
+            Ordne jeden deiner Kanäle zwischen <strong>Lernen</strong>, <strong>Unterhaltung</strong> oder <strong>Stummgeschaltet</strong> zu — oder synchronisiere Abos &amp; Deabos live mit deinem YouTube-Konto.
           </p>
         </div>
-        <div class="channel-summary-badges" id="channel-summary-badges"></div>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <button id="btn-sync-subs-now" class="btn btn-secondary">🔄 Live-Abos abgleichen</button>
+          <div class="channel-summary-badges" id="channel-summary-badges"></div>
+        </div>
       </div>
 
       <div class="panel-card add-channel-card">
@@ -565,7 +568,7 @@
 
         <div class="modal-actions">
           <button id="btn-save-api-config" class="btn btn-secondary">Konfiguration speichern</button>
-          <button id="btn-google-login" class="btn btn-primary">Mit Google anmelden &amp; Abos laden</button>
+          <button id="btn-google-login" class="btn btn-primary">Mit Google anmelden &amp; Abos abgleichen</button>
           <button id="btn-fetch-uu-uploads" class="btn btn-secondary" disabled>Live-Uploads (UU-Trick) abrufen</button>
         </div>
 

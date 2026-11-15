@@ -284,6 +284,7 @@ const els = {
   btnSaveBudgets: document.getElementById('btn-save-budgets'),
   blockedShortsList: document.getElementById('blocked-shorts-list'),
   // Channels
+  btnSyncSubsNow: document.getElementById('btn-sync-subs-now'),
   channelSummaryBadges: document.getElementById('channel-summary-badges'),
   formAddChannel: document.getElementById('form-add-channel'),
   newChannelName: document.getElementById('new-channel-name'),
@@ -1255,7 +1256,14 @@ function renderChannelManager() {
             target="_blank"
             rel="noopener"
             class="btn btn-ghost"
+            title="Kanal auf YouTube öffnen"
           >↗</a>
+          <button
+            type="button"
+            class="btn btn-ghost"
+            data-remove-channel="${escapeHtml(ch.handle)}"
+            title="Kanal entfernen / auf YouTube deabonnieren"
+          >🗑️</button>
         </div>
       </div>
     `
@@ -1274,6 +1282,10 @@ function renderChannelManager() {
         renderVideoViews();
       }
     });
+  });
+
+  els.channelManagerList.querySelectorAll('[data-remove-channel]').forEach((btn) => {
+    btn.addEventListener('click', () => removeOrUnsubscribeChannel(btn.dataset.removeChannel));
   });
 }
 
@@ -1311,21 +1323,53 @@ async function ytApiFetch(url) {
   return res.json();
 }
 
+async function removeOrUnsubscribeChannel(handle) {
+  const ch = state.channels.find((c) => c.handle === handle);
+  if (!ch) return;
+
+  if (oauthAccessToken && ch.subscriptionId) {
+    try {
+      await fetch(`https://www.googleapis.com/youtube/v3/subscriptions?id=${encodeURIComponent(ch.subscriptionId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${oauthAccessToken}` }
+      });
+    } catch {
+      // Lokal trotzdem entfernen
+    }
+  }
+
+  state.channels = state.channels.filter((c) => c.handle !== handle);
+  state.videos = state.videos.filter(
+    (v) =>
+      v.channelHandle.toLowerCase() !== handle.toLowerCase() &&
+      (v.channelName || '').toLowerCase() !== (ch.name || '').toLowerCase()
+  );
+  saveState();
+  renderChannelManager();
+  renderFeedChannelFilter();
+  renderVideoViews();
+}
+
 async function syncSubscriptionsFromApi() {
-  els.syncStatusText.textContent = 'Lade deine echten Abonnements über YouTube Data API v3…';
+  els.syncStatusText.textContent = 'Gleiche deine echten Abonnements über YouTube Data API v3 ab…';
   try {
     let pageToken = '';
     const fetched = [];
-    for (let page = 0; page < 3; page++) {
+    let totalResults = null;
+    for (let page = 0; page < 15; page++) {
       const url = `https://www.googleapis.com/youtube/v3/subscriptions?part=snippet&mine=true&maxResults=50${
         pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''
       }`;
       const data = await ytApiFetch(url);
+      if (totalResults === null && typeof data.pageInfo?.totalResults === 'number') {
+        totalResults = data.pageInfo.totalResults;
+      }
       (data.items || []).forEach((item) => {
         const snip = item.snippet;
         const channelId = snip?.resourceId?.channelId;
         if (!channelId) return;
         fetched.push({
+          subscriptionId: item.id,
           channelId,
           name: snip.title,
           description: snip.description || ''
@@ -1335,17 +1379,25 @@ async function syncSubscriptionsFromApi() {
       pageToken = data.nextPageToken;
     }
 
+    const remoteIds = new Set(fetched.map((r) => r.channelId));
+    const remoteNames = new Set(fetched.map((r) => (r.name || '').trim().toLowerCase()));
+
     let added = 0;
     fetched.forEach((remote) => {
       const existing = state.channels.find(
-        (c) => c.channelId === remote.channelId || c.name.toLowerCase() === remote.name.toLowerCase()
+        (c) =>
+          c.channelId === remote.channelId ||
+          c.handle === remote.channelId ||
+          (c.name || '').trim().toLowerCase() === (remote.name || '').trim().toLowerCase()
       );
       if (existing) {
         existing.channelId = remote.channelId;
+        existing.subscriptionId = remote.subscriptionId;
       } else {
         state.channels.push({
           handle: remote.channelId,
           channelId: remote.channelId,
+          subscriptionId: remote.subscriptionId,
           name: remote.name,
           category: 'learning',
           topic: 'Allgemein & Wissen',
@@ -1356,10 +1408,38 @@ async function syncSubscriptionsFromApi() {
       }
     });
 
+    // Auf YouTube deabonnierte Kanäle und deren Videos sauber entfernen
+    let removed = 0;
+    if (fetched.length > 0 || totalResults === 0) {
+      const removedHandles = new Set();
+      const removedNames = new Set();
+      state.channels = state.channels.filter((c) => {
+        const isStillSub =
+          (c.channelId && remoteIds.has(c.channelId)) ||
+          remoteIds.has(c.handle) ||
+          remoteNames.has((c.name || '').trim().toLowerCase());
+        if (!isStillSub) {
+          removed += 1;
+          removedHandles.add((c.handle || '').toLowerCase());
+          removedNames.add((c.name || '').trim().toLowerCase());
+        }
+        return isStillSub;
+      });
+
+      if (removed > 0) {
+        state.videos = state.videos.filter(
+          (v) =>
+            !removedHandles.has((v.channelHandle || '').toLowerCase()) &&
+            !removedNames.has((v.channelName || '').trim().toLowerCase())
+        );
+      }
+    }
+
     saveState();
     renderChannelManager();
     renderFeedChannelFilter();
-    els.syncStatusText.textContent = `Verbunden! ${fetched.length} Abos synchronisiert (${added} neu hinzugefügt). Klicke auf „Live-Uploads (UU-Trick) abrufen“.`;
+    renderVideoViews();
+    els.syncStatusText.textContent = `Synchronisiert! ${fetched.length} aktive Abos (+${added} neu, -${removed} deabonniert).`;
   } catch (err) {
     els.syncStatusText.textContent = err.message;
   }
@@ -2569,18 +2649,25 @@ function bindEvents() {
     els.syncStatusText.textContent = 'YouTube-, Gemini- & Obsidian-Konfiguration lokal im Browser gespeichert.';
   });
 
-  els.btnGoogleLogin.addEventListener('click', () => {
-    const clientId = els.inputOauthClientId.value.trim() || state.apiConfig.clientId;
+  const triggerGoogleLoginOrSync = () => {
+    if (oauthAccessToken) {
+      syncSubscriptionsFromApi();
+      return;
+    }
+    const clientId = (els.inputOauthClientId?.value || '').trim() || state.apiConfig.clientId;
     if (!clientId) {
+      updateSyncUi();
+      els.syncModal.classList.remove('hidden');
       els.syncStatusText.textContent = 'Bitte zuerst deine Google OAuth 2.0 Client-ID eintragen.';
       return;
     }
     state.apiConfig.clientId = clientId;
-    state.apiConfig.apiKey = els.inputYtApiKey.value.trim();
+    if (els.inputYtApiKey) state.apiConfig.apiKey = els.inputYtApiKey.value.trim();
     if (els.inputGeminiApiKey) state.apiConfig.geminiKey = els.inputGeminiApiKey.value.trim();
     saveState();
 
     if (!window.google?.accounts?.oauth2) {
+      els.syncModal.classList.remove('hidden');
       els.syncStatusText.textContent = 'Google Identity Services konnte nicht geladen werden (offline oder von Adblocker blockiert).';
       return;
     }
@@ -2599,7 +2686,12 @@ function bindEvents() {
       }
     });
     tokenClient.requestAccessToken();
-  });
+  };
+
+  els.btnGoogleLogin.addEventListener('click', triggerGoogleLoginOrSync);
+  if (els.btnSyncSubsNow) {
+    els.btnSyncSubsNow.addEventListener('click', triggerGoogleLoginOrSync);
+  }
 
   els.btnFetchUuUploads.addEventListener('click', fetchLiveUploadsViaUuTrick);
 }
