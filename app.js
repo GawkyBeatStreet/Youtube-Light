@@ -138,7 +138,7 @@ function loadState() {
     dailyLogs: seedCurrentWeekLogs(),
     obsidianConfig: {
       vaultName: '',
-      folder: 'FocusTube'
+      folder: 'YouTube'
     },
     playerPrefs: {
       captionsEnabled: false,
@@ -1092,7 +1092,7 @@ function renderAllNotesTab() {
       const v = findVideoById(btn.dataset.obsidianVideo);
       if (!v) return;
       const md = buildVideoObsidianMarkdown(v);
-      openInObsidianUri(sanitizeFilename(getDisplayTitle(v)), md);
+      openInObsidianUri(sanitizeFilename(getDisplayTitle(v)), md, v.channelName);
     });
   });
 }
@@ -1739,51 +1739,27 @@ function buildVideoObsidianMarkdown(video) {
   const title = getDisplayTitle(video);
   const notes = state.notesByVideo[video.id] || [];
   const aiSummary = state.aiSummaries[video.id]?.markdown || '';
-  const chapters = video.chapters || [];
+  const channelLink = sanitizeFilename(video.channelName || 'Unbekannt');
   const topicTag = String(video.topic || 'wissen')
     .toLowerCase()
     .replace(/[^a-z0-9äöüß]+/gi, '-')
     .replace(/^-|-$/g, '');
 
   const lines = [
-    '---',
-    `title: "${title.replace(/"/g, '\\"')}"`,
-    `channel: "${String(video.channelName || '').replace(/"/g, '\\"')}"`,
-    `topic: "${String(video.topic || '').replace(/"/g, '\\"')}"`,
-    `duration: "${video.durationText || formatMMSS(video.durationSec)}"`,
-    `url: "https://www.youtube.com/watch?v=${video.id}"`,
-    `date: "${getDateKey()}"`,
-    'tags:',
-    '  - focustube',
-    '  - youtube-lernen',
-    topicTag ? `  - ${topicTag}` : null,
-    '---',
+    `[[YouTube]] · [[${channelLink}]]${topicTag ? ` · #${topicTag}` : ''}`,
     '',
-    `# ${title}`,
-    '',
-    `> **Kanal:** ${video.channelName} · **Thema:** ${video.topic} · **Länge:** ${video.durationText || formatMMSS(video.durationSec)}`,
-    `> **Link:** [Auf YouTube öffnen](https://www.youtube.com/watch?v=${video.id})`,
+    `https://www.youtube.com/watch?v=${video.id}`,
     ''
-  ].filter((l) => l !== null);
+  ];
 
   if (aiSummary) {
-    lines.push('## 🧠 KI-Kernaussagen & Active Recall', '', aiSummary, '');
+    lines.push('## Kernaussagen', '', aiSummary, '');
   }
 
-  lines.push('## 📝 Zeitstempel-Notizen', '');
-  if (notes.length === 0) {
-    lines.push('- *(Noch keine manuellen Zeitstempel-Notizen erfasst)*', '');
-  } else {
+  if (notes.length > 0) {
+    lines.push('## Notizen', '');
     notes.forEach((n) => {
       lines.push(`- [${formatMMSS(n.timeSec)}](https://youtu.be/${video.id}?t=${n.timeSec}) ${n.text}`);
-    });
-    lines.push('');
-  }
-
-  if (chapters.length > 0) {
-    lines.push('## 📑 Kapitel', '');
-    chapters.forEach((ch) => {
-      lines.push(`- [${formatMMSS(ch.timeSec)}](https://youtu.be/${video.id}?t=${ch.timeSec}) ${ch.label}`);
     });
     lines.push('');
   }
@@ -1792,18 +1768,7 @@ function buildVideoObsidianMarkdown(video) {
 }
 
 function buildAllNotesObsidianMarkdown() {
-  const lines = [
-    '---',
-    `title: "FocusTube Lern-Notizen (${getDateKey()})"`,
-    `date: "${getDateKey()}"`,
-    'tags:',
-    '  - focustube',
-    '  - lern-logbuch',
-    '---',
-    '',
-    '# FocusTube Lern-Notizen (@henningp.8303)',
-    ''
-  ];
+  const lines = ['[[YouTube]]', '', `# YouTube Lern-Notizen (${getDateKey()})`, ''];
 
   const allIds = Array.from(
     new Set([...Object.keys(state.notesByVideo), ...Object.keys(state.aiSummaries)])
@@ -1812,16 +1777,13 @@ function buildAllNotesObsidianMarkdown() {
     const video = findVideoById(vidId);
     const notes = state.notesByVideo[vidId] || [];
     const ai = state.aiSummaries[vidId]?.markdown || '';
-    lines.push(`## ${video ? getDisplayTitle(video) : vidId}`);
-    if (video) {
-      lines.push(`Kanal: ${video.channelName} · [Video](https://www.youtube.com/watch?v=${vidId})`);
-    }
-    lines.push('');
+    const chLink = video ? ` · [[${sanitizeFilename(video.channelName || '')}]]` : '';
+    lines.push(`## ${video ? getDisplayTitle(video) : vidId}${chLink}`);
+    lines.push(`https://www.youtube.com/watch?v=${vidId}`, '');
     if (ai) {
-      lines.push('### KI-Zusammenfassung', ai, '');
+      lines.push(ai, '');
     }
     if (notes.length > 0) {
-      lines.push('### Notizen');
       notes.forEach((n) => lines.push(`- [${formatMMSS(n.timeSec)}](https://youtu.be/${vidId}?t=${n.timeSec}) ${n.text}`));
       lines.push('');
     }
@@ -1829,18 +1791,21 @@ function buildAllNotesObsidianMarkdown() {
   return lines.join('\n');
 }
 
-function openInObsidianUri(baseFilename, markdownContent) {
-  const folder = (state.obsidianConfig.folder || 'FocusTube').replace(/^\/+|\/+$/g, '');
-  const filePath = folder ? `${folder}/${baseFilename}` : baseFilename;
-  const params = new URLSearchParams();
-  if (state.obsidianConfig.vaultName) {
-    params.set('vault', state.obsidianConfig.vaultName);
-  }
-  params.set('file', filePath);
-  params.set('content', markdownContent);
+function openInObsidianUri(baseFilename, markdownContent, subFolder = '') {
+  const rootFolder = (state.obsidianConfig.folder || 'YouTube').replace(/^\/+|\/+$/g, '');
+  const cleanSub = subFolder ? sanitizeFilename(subFolder) : '';
+  const pathParts = [rootFolder, cleanSub, baseFilename].filter(Boolean);
+  const filePath = pathParts.join('/');
 
-  const uri = `obsidian://new?${params.toString()}`;
-  window.location.href = uri;
+  // Wichtig: encodeURIComponent statt URLSearchParams, damit Leerzeichen als %20 statt + ankommen
+  const queryParts = [];
+  if (state.obsidianConfig.vaultName) {
+    queryParts.push(`vault=${encodeURIComponent(state.obsidianConfig.vaultName)}`);
+  }
+  queryParts.push(`file=${encodeURIComponent(filePath)}`);
+  queryParts.push(`content=${encodeURIComponent(markdownContent)}`);
+
+  window.location.href = `obsidian://new?${queryParts.join('&')}`;
 }
 
 function downloadMarkdownFile(filename, markdownContent) {
@@ -2643,8 +2608,8 @@ function bindEvents() {
       const video = findVideoById(activeVideoId);
       if (!video) return;
       const md = buildVideoObsidianMarkdown(video);
-      openInObsidianUri(sanitizeFilename(getDisplayTitle(video)), md);
-      els.playerObsidianStatus.textContent = 'Obsidian wird über obsidian://new geöffnet…';
+      openInObsidianUri(sanitizeFilename(getDisplayTitle(video)), md, video.channelName);
+      els.playerObsidianStatus.textContent = 'Obsidian wird unter YouTube / Kanal geöffnet…';
     });
   }
 
