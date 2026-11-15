@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FocusTube — Low-Dopamine Wissens-Workspace</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body class="calm-thumbnails mode-learning">
+  <!-- TOP-BAR / FOKUS-COCKPIT -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">FT</div>
+        <div>
+          <div class="brand-title">FocusTube</div>
+          <div class="brand-subtitle" id="user-handle-label">Wissens-Workspace für @henningp.8303</div>
+        </div>
+      </div>
+
+      <!-- Zentraler Modus-Umschalter -->
+      <div class="mode-switcher" role="group" aria-label="Modus wählen">
+        <button id="btn-mode-learning" class="mode-btn active" data-mode="learning">
+          <span>🎓 Lernen</span>
+          <small>Wissen &amp; Skills</small>
+        </button>
+        <button id="btn-mode-entertainment" class="mode-btn" data-mode="entertainment">
+          <span>🍿 Unterhaltung</span>
+          <small>Zeitbudget</small>
+        </button>
+      </div>
+
+      <!-- Rechte Cockpit-Steuerung -->
+      <div class="cockpit-right">
+        <button id="live-timer-pill" class="timer-pill learning" title="Klicken, um Timer manuell für eine externe Lerneinheit zu starten/pausieren">
+          <span class="timer-dot" id="timer-dot"></span>
+          <span id="timer-pill-text">Lernzeit heute: 00:00 / 45:00 Ziel</span>
+          <span class="timer-state-badge" id="timer-state-badge">Auto</span>
+        </button>
+
+        <button id="btn-open-sync" class="btn btn-secondary">
+          <span>🔗 Sync, Gemini &amp; Obsidian</span>
+          <span id="sync-status-dot" class="status-indicator offline"></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Anti-Dopamin Quick-Toggles & Haupt-Navigation -->
+    <div class="subbar">
+      <nav class="main-nav" aria-label="Hauptbereiche">
+        <button class="nav-tab active" data-tab="algorithm">🧭 Wissens-Algorithmus</button>
+        <button class="nav-tab" data-tab="discover">🔭 Wissens-Entdecker</button>
+        <button class="nav-tab" data-tab="feed">📺 Abo-Feed</button>
+        <button class="nav-tab" data-tab="dashboard">📊 Wochen-Dashboard &amp; Timer</button>
+        <button class="nav-tab" data-tab="channels">🗂️ Abo-Manager</button>
+        <button class="nav-tab" data-tab="notes">📝 Meine Lern-Notizen <span id="notes-count-badge" class="pill-count">0</span></button>
+      </nav>
+
+      <div class="quick-toggles">
+        <label class="toggle-chip" title="Entfernt Emojis, GROSSBUCHSTABEN und Clickbait aus Videotiteln">
+          <input type="checkbox" id="toggle-calm-titles" checked />
+          <span>Ruhige Titel</span>
+        </label>
+        <label class="toggle-chip" title="Zeigt Thumbnails entsättigt in Graustufen bis zum Hover">
+          <input type="checkbox" id="toggle-calm-thumbs" checked />
+          <span>Graustufen-Thumbnails</span>
+        </label>
+        <label class="toggle-chip" title="Begrenzt Serien-Kanäle wie Midwest Safety oder immocation auf max. 2 Videos im Feed">
+          <input type="checkbox" id="toggle-flood-brake" checked />
+          <span>Kanal-Flut-Bremse (Max. 2/Kanal)</span>
+        </label>
+      </div>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <!-- SCHUTZSCHILD-VIDEO-WORKSPACE (eingeblendet sobald ein Video aktiv ist) -->
+    <section id="player-workspace" class="player-workspace hidden" aria-label="Ablenkungsfreier Video-Workspace">
+      <div class="workspace-header">
+        <div class="workspace-title-wrap">
+          <span id="player-category-badge" class="category-badge learning">🎓 Lernen</span>
+          <h2 id="player-video-title" class="workspace-video-title">Videotitel</h2>
+          <div class="workspace-meta">
+            <span id="player-channel-name">Kanal</span> ·
+            <span id="player-topic">Thema</span> ·
+            <span id="player-duration-label">00:00</span>
+          </div>
+        </div>
+        <div class="workspace-actions">
+          <button id="btn-toggle-watched" class="btn btn-secondary">✓ Als gesehen markieren</button>
+          <button id="btn-close-player" class="btn btn-ghost">✕ Zurück zur Übersicht</button>
+        </div>
+      </div>
+
+      <div class="workspace-grid">
+        <!-- Linke Spalte: Schutzschild-Player -->
+        <div class="player-column">
+          <div id="player-stage" class="player-stage">
+            <div class="video-aspect-box">
+              <!-- YouTube IFrame Ziel -->
+              <div id="yt-player-container"></div>
+
+              <!-- Transparenter Schutzschild gegen native YouTube-Overlays -->
+              <div id="player-shield" class="player-shield" title="Klicken für Play/Pause (YouTube-Vorschläge sind blockiert)"></div>
+
+              <!-- FocusTube Pause- & Ende-Overlay (verdeckt 100 % der YouTube-Vorschläge!) -->
+              <div id="focus-overlay" class="focus-overlay hidden">
+                <div class="focus-overlay-card">
+                  <div class="overlay-badge" id="overlay-badge">⏸️ Fokus-Pause — YouTube-Vorschläge blockiert</div>
+                  <h3 id="overlay-heading">Kurze Lern-Reflexion</h3>
+                  <p id="overlay-subtext" class="overlay-subtext">
+                    Kein Weiterklicken in den Algorithmus. Notiere deinen wichtigsten Gedanken oder setze das Video gezielt fort.
+                  </p>
+                  <div class="overlay-note-box">
+                    <input
+                      type="text"
+                      id="overlay-quick-note"
+                      placeholder="Erkenntnis bei diesem Zeitstempel festhalten…"
+                    />
+                    <button id="btn-overlay-save-note" class="btn btn-primary">Notiz speichern</button>
+                  </div>
+                  <div class="overlay-actions">
+                    <button id="btn-overlay-resume" class="btn btn-primary">▶ Weiter abspielen</button>
+                    <button id="btn-overlay-back" class="btn btn-secondary">← Zurück zur Lern-Übersicht</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Eigene FocusTube Steuerleiste -->
+            <div class="custom-controls">
+              <div class="scrubber-row">
+                <span id="ctrl-current-time" class="time-code">00:00</span>
+                <input
+                  type="range"
+                  id="ctrl-scrubber"
+                  class="scrubber-slider"
+                  min="0"
+                  max="100"
+                  value="0"
+                  step="0.5"
+                  aria-label="Videoposition"
+                />
+                <span id="ctrl-total-time" class="time-code">00:00</span>
+              </div>
+
+              <div class="controls-row">
+                <div class="controls-left">
+                  <button id="ctrl-play-pause" class="ctrl-btn primary" title="Play / Pause (Leertaste)">▶ Play</button>
+                  <button id="ctrl-back-15" class="ctrl-btn" title="15 Sekunden zurück">-15s</button>
+                  <button id="ctrl-fwd-15" class="ctrl-btn" title="15 Sekunden vor">+15s</button>
+                  <button id="ctrl-mute" class="ctrl-btn" title="Ton An/Aus">🔊 Ton</button>
+                </div>
+
+                <div class="controls-right">
+                  <div class="speed-group" role="group" aria-label="Wiedergabegeschwindigkeit">
+                    <button class="speed-btn active" data-speed="1">1x</button>
+                    <button class="speed-btn" data-speed="1.25">1.25x</button>
+                    <button class="speed-btn" data-speed="1.5">1.5x</button>
+                    <button class="speed-btn" data-speed="1.75">1.75x</button>
+                    <button class="speed-btn" data-speed="2">2x</button>
+                  </div>
+                  <button id="ctrl-fullscreen" class="ctrl-btn" title="Vollbild mit aktivem Schutzschild">⛶ Vollbild</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Rechte Spalte: Kapitel, Zeitstempel-Notizen, KI & Obsidian -->
+        <aside class="companion-column">
+          <div class="companion-panel">
+            <h3>📑 Kapitel-Inhaltsverzeichnis</h3>
+            <p class="panel-hint">Direktsprung zu strukturierten Abschnitten</p>
+            <ul id="player-chapters-list" class="chapters-list"></ul>
+          </div>
+
+          <div class="companion-panel">
+            <h3>📝 Zeitstempel-Notizen &amp; Obsidian</h3>
+            <div class="note-composer">
+              <textarea
+                id="companion-note-input"
+                rows="3"
+                placeholder="Was ist die Kern-Erkenntnis? (Wird mit aktuellem Zeitstempel gespeichert)"
+              ></textarea>
+              <button id="btn-save-companion-note" class="btn btn-primary full-width">
+                + Notiz bei <span id="note-timestamp-preview">00:00</span> speichern
+              </button>
+            </div>
+            <ul id="player-notes-list" class="notes-list"></ul>
+            <div class="obsidian-actions-row">
+              <button id="btn-player-obsidian" class="btn btn-obsidian" title="Öffnet diese Video-Notiz direkt in deiner Obsidian-App">
+                🟣 In Obsidian öffnen
+              </button>
+              <button id="btn-player-obsidian-file" class="btn btn-secondary" title="Schreibt direkt in den verknüpften Vault-Ordner oder lädt eine .md-Datei herunter">
+                💾 .md / Vault speichern
+              </button>
+              <button id="btn-player-copy-md" class="btn btn-ghost" title="Markdown in Zwischenablage kopieren">
+                📋 Kopieren
+              </button>
+            </div>
+            <p id="player-obsidian-status" class="panel-hint"></p>
+          </div>
+
+          <div class="companion-panel">
+            <h3>🧠 Gemini KI-Lernnotiz</h3>
+            <p class="panel-hint">
+              Extrahiert Kernaussagen, Mental Models &amp; Active-Recall-Fragen (nutzt Titel, Beschreibung, Kapitel &amp; deine Notizen — optional Transkript einfügen).
+            </p>
+            <textarea
+              id="ai-transcript-input"
+              rows="2"
+              placeholder="Optional: Transkript oder eigene Stichpunkte hier einfügen…"
+            ></textarea>
+            <button id="btn-ai-summarize" class="btn btn-secondary full-width" style="margin-top:8px;">
+              ✨ Kernaussagen für Obsidian generieren
+            </button>
+            <div id="ai-summary-output" class="ai-summary-box hidden"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- TAB 1: WISSENS-ALGORITHMUS -->
+    <section id="tab-algorithm" class="tab-panel active">
+      <div class="section-banner learning-banner">
+        <div>
+          <h1>Dein transparenter Wissens-Algorithmus</h1>
+          <p>
+            Kein Dopamin-Feed, keine Shorts, keine endlose Autoplay-Spirale. Wähle deine aktuellen Lernziele — FocusTube bewertet deine Abos nach Tiefe, Struktur und Themenfokus.
+          </p>
+        </div>
+        <div class="banner-stats">
+          <div class="mini-stat">
+            <span class="mini-stat-value" id="stat-blocked-shorts">5</span>
+            <span class="mini-stat-label">Shorts blockiert</span>
+          </div>
+          <div class="mini-stat">
+            <span class="mini-stat-value" id="stat-learning-count">0</span>
+            <span class="mini-stat-label">Fokus-Videos</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lernziel-Auswahl -->
+      <div class="goals-bar">
+        <div class="goals-header">
+          <span>🎯 Aktive Lernziele (steuern dein Ranking):</span>
+          <button id="btn-reset-goals" class="btn-link">Alle auswählen</button>
+        </div>
+        <div id="learning-goals-chips" class="goals-chips"></div>
+      </div>
+
+      <!-- Such- und Informationsdichte-Filter -->
+      <div class="filter-bar">
+        <input
+          type="search"
+          id="algo-search-input"
+          class="search-input"
+          placeholder="Nach Thema, Kanal oder Stichwort filtern (z. B. Spieltheorie, Immobilien, Dopamin)…"
+        />
+        <select id="algo-density-mode" class="select-input" title="Steuert das Ranking nach Informationsdichte">
+          <option value="dense">⚡ Ranking: Hohe Informationsdichte (6–22 Min.)</option>
+          <option value="balanced">⚖️ Ranking: Ausgewogen (10–35 Min.)</option>
+          <option value="deepdive">🎓 Ranking: Ausführliche Vorträge (&gt; 25 Min.)</option>
+        </select>
+        <select id="algo-duration-filter" class="select-input">
+          <option value="all">Alle Videolängen</option>
+          <option value="compact">Kompakt &amp; Dicht (6–22 Min.)</option>
+          <option value="medium">Mittel (22–38 Min.)</option>
+          <option value="long">Lang (&gt; 38 Min.)</option>
+        </select>
+        <label class="toggle-chip">
+          <input type="checkbox" id="toggle-hide-watched" />
+          <span>Gesehene ausblenden</span>
+        </label>
+      </div>
+
+      <div id="entertainment-lock-notice" class="lock-screen hidden"></div>
+      <div id="algorithm-video-grid" class="video-grid"></div>
+    </section>
+
+    <!-- TAB 1B: WISSENS-ENTDECKER (NEUE KANÄLE AUSSERHALB DEINER ABOS) -->
+    <section id="tab-discover" class="tab-panel">
+      <div class="section-banner learning-banner">
+        <div>
+          <h1>🔭 Wissens-Entdecker (außerhalb deiner Abos)</h1>
+          <p>
+            Pull statt Push: Suche gezielt nach neuen Themen. Gemini formuliert präzise Fach-Suchanfragen, YouTube liefert reale Treffer ohne Shorts, und Gemini filtert nach <strong>Informationsdichte</strong> (kompakt &amp; gehaltvoll statt künstlich gestreckter Videos). Maximal <strong>5 Ergebnisse</strong> gegen Binge-Scrolling.
+          </p>
+        </div>
+        <div class="banner-stats">
+          <div class="mini-stat">
+            <span class="mini-stat-value" id="stat-discover-count">0</span>
+            <span class="mini-stat-label">Max. 5 Treffer</span>
+          </div>
+          <div class="mini-stat">
+            <span class="mini-stat-value" id="stat-discover-blocked">0</span>
+            <span class="mini-stat-label">Ausgeblendet</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-card discover-control-card">
+        <div class="discover-search-row">
+          <input
+            type="search"
+            id="discover-query-input"
+            class="search-input"
+            placeholder="Welches Thema oder welchen Skill willst du heute lernen? (z. B. Anleihen &amp; Zinskurve, Faszien, Spieltheorie)…"
+          />
+          <select id="discover-length-pref" class="select-input">
+            <option value="compact">⚡ Kompakt &amp; Dicht (5–22 Min.)</option>
+            <option value="medium">📘 Strukturiert (15–35 Min.)</option>
+            <option value="any">Alle Längen (ohne Shorts)</option>
+          </select>
+          <select id="discover-lang-pref" class="select-input">
+            <option value="all">DE &amp; EN</option>
+            <option value="de">Deutsch</option>
+            <option value="en">Englisch</option>
+          </select>
+          <button id="btn-run-discovery" class="btn btn-primary">✨ Mit Gemini entdecken</button>
+        </div>
+
+        <div class="discover-goal-row">
+          <span class="panel-hint">Schnellstart nach Lernziel:</span>
+          <div id="discover-goal-pills" class="goals-chips"></div>
+        </div>
+
+        <div class="discover-direct-row">
+          <input
+            type="url"
+            id="discover-direct-url"
+            class="search-input"
+            placeholder="Oder beliebigen YouTube-Link direkt hier einfügen (z. B. https://www.youtube.com/watch?v=…) → sofort im Schutzschild-Player öffnen"
+          />
+          <button id="btn-open-direct-url" class="btn btn-secondary">▶ Link im Schutzschild öffnen</button>
+        </div>
+      </div>
+
+      <div id="discover-status-box" class="discover-status-box hidden"></div>
+      <div id="discover-results-grid" class="video-grid"></div>
+    </section>
+
+    <!-- TAB 2: ABO-FEED -->
+    <section id="tab-feed" class="tab-panel">
+      <div class="section-header">
+        <div>
+          <h1>Gefilterter Abo-Feed</h1>
+          <p id="feed-mode-description">
+            Zeigt chronologisch die neuesten Uploads deiner Abos im aktuell gewählten Modus. Shorts sind dauerhaft ausgeblendet.
+          </p>
+        </div>
+        <div class="feed-controls">
+          <select id="feed-channel-filter" class="select-input">
+            <option value="all">Alle Kanäle im aktuellen Modus</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="feed-lock-notice" class="lock-screen hidden"></div>
+      <div id="feed-video-grid" class="video-grid"></div>
+    </section>
+
+    <!-- TAB 3: WOCHEN-DASHBOARD & TIMER -->
+    <section id="tab-dashboard" class="tab-panel">
+      <div class="section-header">
+        <div>
+          <h1>Wochen-Dashboard &amp; Zeitbudget</h1>
+          <p>Messbare Balance zwischen gezieltem Wissensaufbau und bewusster Unterhaltung.</p>
+        </div>
+        <div class="timer-manual-controls">
+          <button id="btn-dash-timer-toggle" class="btn btn-primary">▶ Session-Timer starten</button>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <span class="kpi-label">Fokus-Quote diese Woche</span>
+          <span class="kpi-value emerald" id="kpi-focus-ratio">0%</span>
+          <span class="kpi-sub">Anteil Lernzeit an der gesamten YouTube-Nutzung</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Lernzeit diese Woche</span>
+          <span class="kpi-value" id="kpi-week-learning">0 Min.</span>
+          <span class="kpi-sub" id="kpi-today-learning">Heute: 0 Min.</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Unterhaltungszeit diese Woche</span>
+          <span class="kpi-value amber" id="kpi-week-entertainment">0 Min.</span>
+          <span class="kpi-sub" id="kpi-today-entertainment">Heute: 0 Min.</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Abgewehrte Ablenkungen</span>
+          <span class="kpi-value" id="kpi-blocked-count">5 Shorts + 100% Endscreens</span>
+          <span class="kpi-sub">Keine Auto-Vorschläge im Video-Player</span>
+        </div>
+      </div>
+
+      <div class="dashboard-split">
+        <!-- Balkendiagramm Mo - So -->
+        <div class="panel-card">
+          <div class="panel-card-head">
+            <h3>Nutzung Mo – So (Minuten pro Tag)</h3>
+            <div class="legend">
+              <span class="legend-item"><i class="dot emerald"></i> Lernen</span>
+              <span class="legend-item"><i class="dot amber"></i> Unterhaltung</span>
+            </div>
+          </div>
+          <div id="weekly-chart" class="weekly-chart"></div>
+        </div>
+
+        <!-- Tagesbudgets konfigurieren -->
+        <div class="panel-card">
+          <h3>Tages-Timer &amp; Budgets einstellen</h3>
+          <p class="panel-hint">
+            Der Live-Timer läuft automatisch, sobald ein Video spielt, oder manuell über die Top-Bar.
+          </p>
+
+          <div class="budget-form">
+            <label class="form-field">
+              <span>🎓 Tägliches Lern-Ziel (Minuten):</span>
+              <input type="number" id="input-learning-goal" min="5" max="360" value="45" />
+            </label>
+            <label class="form-field">
+              <span>🍿 Striktes Unterhaltungs-Tageslimit (Minuten):</span>
+              <input type="number" id="input-entertainment-limit" min="0" max="180" value="20" />
+            </label>
+            <button id="btn-save-budgets" class="btn btn-primary">Budgets speichern</button>
+          </div>
+
+          <div class="blocked-shorts-box">
+            <h4>🚫 Blockierte Shorts aus deinem Feed</h4>
+            <p class="panel-hint">Diese Shorts wurden automatisch aus deiner Startseite verbannt:</p>
+            <ul id="blocked-shorts-list" class="blocked-shorts-list"></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: ABO-MANAGER -->
+    <section id="tab-channels" class="tab-panel">
+      <div class="section-header">
+        <div>
+          <h1>Abo-Manager (@henningp.8303)</h1>
+          <p>
+            Ordne jeden deiner Kanäle zwischen <strong>Lernen</strong>, <strong>Unterhaltung</strong> oder <strong>Stummgeschaltet</strong> zu — oder abonniere direkt neue Kanäle per YouTube-API.
+          </p>
+        </div>
+        <div class="channel-summary-badges" id="channel-summary-badges"></div>
+      </div>
+
+      <div class="panel-card add-channel-card">
+        <h3>Kanal hinzufügen oder über YouTube-API abonnieren</h3>
+        <form id="form-add-channel" class="add-channel-form">
+          <input type="text" id="new-channel-name" placeholder="Kanalname (z. B. Finanzfluss)" required />
+          <input type="text" id="new-channel-handle" placeholder="@Handle oder Channel-ID (z. B. @Finanzfluss)" required />
+          <select id="new-channel-category">
+            <option value="learning">🎓 Lernen</option>
+            <option value="entertainment">🍿 Unterhaltung</option>
+          </select>
+          <input type="text" id="new-channel-topic" placeholder="Thema (z. B. Finanzen & Makro)" />
+          <button type="submit" class="btn btn-primary">+ Hinzufügen</button>
+        </form>
+      </div>
+
+      <div id="channel-manager-list" class="channel-manager-grid"></div>
+    </section>
+
+    <!-- TAB 5: LERN-NOTIZEN -->
+    <section id="tab-notes" class="tab-panel">
+      <div class="section-header">
+        <div>
+          <h1>Meine Lern-Notizen &amp; Obsidian</h1>
+          <p>Alle gespeicherten Erkenntnisse mit klickbarem Zeitstempel — lokal gesichert und direkt in Obsidian exportierbar.</p>
+        </div>
+        <div class="notes-header-actions">
+          <button id="btn-export-obsidian-all" class="btn btn-obsidian">🟣 Sammelnotiz in Obsidian</button>
+          <button id="btn-export-notes" class="btn btn-secondary">⬇ Als Markdown exportieren</button>
+        </div>
+      </div>
+      <div id="all-notes-container" class="all-notes-container"></div>
+    </section>
+  </main>
+
+  <!-- MODAL: YOUTUBE, GEMINI API & OBSIDIAN SYNC -->
+  <div id="sync-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sync-modal-title">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2 id="sync-modal-title">🔗 YouTube, Gemini KI &amp; Obsidian Sync</h2>
+        <button id="btn-close-sync" class="btn btn-ghost">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <p class="modal-intro">
+          FocusTube läuft als reine Client-Side-App auf GitHub Pages (ohne eigenen Server). Alle API-Keys werden ausschließlich lokal in deinem Browser (<code>localStorage</code>) gespeichert.
+        </p>
+
+        <div class="sync-status-box" id="sync-status-box">
+          <strong>Status:</strong> <span id="sync-status-text">Offline-Modus (deine echten @henningp.8303 Abo-Daten sind bereits vorab geladen)</span>
+        </div>
+
+        <div class="form-stack">
+          <h3 class="modal-section-title">1. YouTube Data API v3 &amp; Google Login</h3>
+          <label class="form-field">
+            <span>Google OAuth 2.0 Client-ID (für Live-Abos &amp; UU-Uploads):</span>
+            <input
+              type="text"
+              id="input-oauth-client-id"
+              placeholder="1234567890-abcxyz.apps.googleusercontent.com"
+            />
+          </label>
+          <label class="form-field">
+            <span>YouTube Data API v3 Key (für BYOK &amp; Wissens-Entdecker außerhalb deiner Abos):</span>
+            <input
+              type="password"
+              id="input-yt-api-key"
+              placeholder="AIzaSy..."
+            />
+          </label>
+
+          <h3 class="modal-section-title">2. Gemini KI-Suche &amp; Lernnotizen</h3>
+          <label class="form-field">
+            <span>Gemini API Key (kostenlos über Google AI Studio — für präzise Discovery-Suche, Informationsdichte-Bewertung &amp; Obsidian-Zusammenfassungen):</span>
+            <input
+              type="password"
+              id="input-gemini-api-key"
+              placeholder="AIzaSy..."
+            />
+          </label>
+          <label class="form-field">
+            <span>Gemini Modell:</span>
+            <select id="select-gemini-model">
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash (schnell &amp; kostenlos nutzbar)</option>
+              <option value="gemini-2.5-pro">Gemini 2.5 Pro (tiefere Analyse)</option>
+            </select>
+          </label>
+
+          <h3 class="modal-section-title">3. Obsidian Vault Verbindung</h3>
+          <label class="form-field">
+            <span>Obsidian Vault-Name (optional — leer lassen für den aktuell geöffneten Vault):</span>
+            <input
+              type="text"
+              id="input-obsidian-vault"
+              placeholder="z. B. SecondBrain"
+            />
+          </label>
+          <label class="form-field">
+            <span>Ziel-Ordner im Vault:</span>
+            <input
+              type="text"
+              id="input-obsidian-folder"
+              placeholder="FocusTube"
+              value="FocusTube"
+            />
+          </label>
+          <div class="obsidian-dir-picker-row">
+            <button id="btn-pick-obsidian-dir" type="button" class="btn btn-secondary">
+              📁 Vault-Ordner direkt verknüpfen (Chrome/Edge/Arc)
+            </button>
+            <span id="obsidian-dir-status" class="panel-hint">Kein lokaler Ordner verknüpft (Standard: obsidian:// URI &amp; .md Download)</span>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button id="btn-save-api-config" class="btn btn-secondary">Konfiguration speichern</button>
+          <button id="btn-google-login" class="btn btn-primary">Mit Google anmelden &amp; Abos laden</button>
+          <button id="btn-fetch-uu-uploads" class="btn btn-secondary" disabled>Live-Uploads (UU-Trick) abrufen</button>
+        </div>
+
+        <details class="setup-guide">
+          <summary>Kurzanleitung: Keys in 3 Minuten einrichten (YouTube + Gemini)</summary>
+          <ol>
+            <li><strong>Gemini API Key:</strong> In <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> kostenlos einen Key erstellen und oben eintragen.</li>
+            <li><strong>YouTube Data API v3:</strong> In der <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> ein Projekt wählen, <strong>YouTube Data API v3</strong> aktivieren und entweder einen API Key (für die Discovery-Suche) oder eine OAuth-Client-ID (Webanwendung, Ursprung z. B. <code>https://deinname.github.io</code> &amp; <code>http://localhost:8090</code>) anlegen.</li>
+            <li><strong>Obsidian:</strong> Funktioniert sofort über <code>obsidian://new</code> ohne Installation. Alternativ in Chrome/Arc/Edge direkt den Vault-Unterordner verknüpfen.</li>
+          </ol>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

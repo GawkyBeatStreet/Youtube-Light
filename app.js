@@ -1,0 +1,2622 @@
+import {
+  LEARNING_GOALS,
+  INITIAL_CHANNELS,
+  INITIAL_VIDEOS,
+  BLOCKED_SHORTS_SAMPLE,
+  calmTitleTransform
+} from './data.js';
+
+const STORAGE_KEY = 'focustube_state_v1';
+const WEEKDAY_NAMES = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+const MON_TO_SUN_ORDER = [1, 2, 3, 4, 5, 6, 0];
+
+// --- HILFSFUNKTIONEN ---
+function escapeHtml(str = '') {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatMMSS(totalSeconds) {
+  const sec = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function getDateKey(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function getCurrentWeekDates() {
+  const now = new Date();
+  const day = now.getDay(); // 0=So .. 6=Sa
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  const monday = new Date(now);
+  monday.setHours(0, 0, 0, 0);
+  monday.setDate(now.getDate() + diffToMonday);
+
+  return MON_TO_SUN_ORDER.map((_, idx) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + idx);
+    return {
+      key: getDateKey(d),
+      label: WEEKDAY_NAMES[d.getDay()],
+      isToday: getDateKey(d) === getDateKey(now),
+      isFuture: d > now && getDateKey(d) !== getDateKey(now)
+    };
+  });
+}
+
+function seedCurrentWeekLogs(existingLogs = {}) {
+  const logs = { ...existingLogs };
+  const week = getCurrentWeekDates();
+  const baseline = [
+    { learningSec: 42 * 60, entertainmentSec: 12 * 60 },
+    { learningSec: 55 * 60, entertainmentSec: 18 * 60 },
+    { learningSec: 38 * 60, entertainmentSec: 10 * 60 },
+    { learningSec: 64 * 60, entertainmentSec: 15 * 60 },
+    { learningSec: 49 * 60, entertainmentSec: 19 * 60 },
+    { learningSec: 32 * 60, entertainmentSec: 14 * 60 },
+    { learningSec: 0, entertainmentSec: 0 }
+  ];
+
+  week.forEach((dayInfo, idx) => {
+    if (!logs[dayInfo.key] && !dayInfo.isToday && !dayInfo.isFuture) {
+      logs[dayInfo.key] = { ...baseline[idx] };
+    }
+  });
+
+  const today = getDateKey();
+  if (!logs[today]) {
+    logs[today] = { learningSec: 0, entertainmentSec: 0 };
+  }
+  return logs;
+}
+
+function parseIsoDuration(iso = '') {
+  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return 0;
+  const h = parseInt(match[1] || '0', 10);
+  const m = parseInt(match[2] || '0', 10);
+  const s = parseInt(match[3] || '0', 10);
+  return h * 3600 + m * 60 + s;
+}
+
+function extractChaptersFromDescription(desc = '') {
+  const lines = desc.split('\n');
+  const chapters = [];
+  const regex = /(?:^|\s)((?:\d{1,2}:)?\d{1,2}:\d{2})\s+[-–|]?\s*(.+)$/;
+  for (const line of lines) {
+    const m = line.trim().match(regex);
+    if (m) {
+      const parts = m[1].split(':').map((n) => parseInt(n, 10));
+      let timeSec = 0;
+      if (parts.length === 3) timeSec = parts[0] * 3600 + parts[1] * 60 + parts[2];
+      else timeSec = parts[0] * 60 + parts[1];
+      const label = m[2].trim().slice(0, 80);
+      if (label) chapters.push({ timeSec, label });
+    }
+  }
+  return chapters.slice(0, 12);
+}
+
+// --- STATE ---
+function loadState() {
+  const fallback = {
+    mode: 'learning',
+    activeTab: 'algorithm',
+    calmTitles: true,
+    calmThumbnails: true,
+    floodBrake: true,
+    hideWatched: false,
+    densityPreference: 'dense',
+    activeGoals: LEARNING_GOALS.map((g) => g.id),
+    channels: INITIAL_CHANNELS.map((c) => ({ ...c })),
+    videos: INITIAL_VIDEOS.map((v) => ({ ...v })),
+    watchedIds: [],
+    notesByVideo: {},
+    aiSummaries: {},
+    discoveryResults: [],
+    discoveryCache: {},
+    blockedDiscoveryChannels: [],
+    budgets: {
+      learningGoalMin: 45,
+      entertainmentLimitMin: 20
+    },
+    dailyLogs: seedCurrentWeekLogs(),
+    obsidianConfig: {
+      vaultName: '',
+      folder: 'FocusTube'
+    },
+    apiConfig: {
+      clientId: '',
+      apiKey: '',
+      geminiKey: '',
+      geminiModel: 'gemini-2.5-flash'
+    }
+  };
+
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return {
+      ...fallback,
+      ...parsed,
+      budgets: { ...fallback.budgets, ...(parsed.budgets || {}) },
+      obsidianConfig: { ...fallback.obsidianConfig, ...(parsed.obsidianConfig || {}) },
+      apiConfig: { ...fallback.apiConfig, ...(parsed.apiConfig || {}) },
+      dailyLogs: seedCurrentWeekLogs(parsed.dailyLogs || {})
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+let state = loadState();
+
+function saveState() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Ignorieren, falls Storage im Privatmodus voll ist
+  }
+}
+
+// --- RUNTIME PLAYER & TIMER VARIABLEN ---
+let ytPlayer = null;
+let ytApiReady = false;
+let pendingVideoToLoad = null;
+let activeVideoId = null;
+let isVideoPlaying = false;
+let manualTimerActive = false;
+let playbackRate = 1;
+let scrubberPollTimer = null;
+let lastVideoDuration = 0;
+let endScreenTriggered = false;
+let oauthAccessToken = null;
+let tokenClient = null;
+let obsidianDirHandle = null;
+
+// --- DOM REFERENZEN ---
+const els = {
+  body: document.body,
+  btnModeLearning: document.getElementById('btn-mode-learning'),
+  btnModeEntertainment: document.getElementById('btn-mode-entertainment'),
+  liveTimerPill: document.getElementById('live-timer-pill'),
+  timerPillText: document.getElementById('timer-pill-text'),
+  timerStateBadge: document.getElementById('timer-state-badge'),
+  navTabs: document.querySelectorAll('.nav-tab'),
+  tabPanels: document.querySelectorAll('.tab-panel'),
+  toggleCalmTitles: document.getElementById('toggle-calm-titles'),
+  toggleCalmThumbs: document.getElementById('toggle-calm-thumbs'),
+  toggleFloodBrake: document.getElementById('toggle-flood-brake'),
+  toggleHideWatched: document.getElementById('toggle-hide-watched'),
+  learningGoalsChips: document.getElementById('learning-goals-chips'),
+  btnResetGoals: document.getElementById('btn-reset-goals'),
+  algoSearchInput: document.getElementById('algo-search-input'),
+  algoDensityMode: document.getElementById('algo-density-mode'),
+  algoDurationFilter: document.getElementById('algo-duration-filter'),
+  algorithmVideoGrid: document.getElementById('algorithm-video-grid'),
+  entertainmentLockNotice: document.getElementById('entertainment-lock-notice'),
+  // Wissens-Entdecker
+  discoverQueryInput: document.getElementById('discover-query-input'),
+  discoverLengthPref: document.getElementById('discover-length-pref'),
+  discoverLangPref: document.getElementById('discover-lang-pref'),
+  btnRunDiscovery: document.getElementById('btn-run-discovery'),
+  discoverGoalPills: document.getElementById('discover-goal-pills'),
+  discoverDirectUrl: document.getElementById('discover-direct-url'),
+  btnOpenDirectUrl: document.getElementById('btn-open-direct-url'),
+  discoverStatusBox: document.getElementById('discover-status-box'),
+  discoverResultsGrid: document.getElementById('discover-results-grid'),
+  statDiscoverCount: document.getElementById('stat-discover-count'),
+  statDiscoverBlocked: document.getElementById('stat-discover-blocked'),
+  feedLockNotice: document.getElementById('feed-lock-notice'),
+  feedVideoGrid: document.getElementById('feed-video-grid'),
+  feedChannelFilter: document.getElementById('feed-channel-filter'),
+  feedModeDescription: document.getElementById('feed-mode-description'),
+  statBlockedShorts: document.getElementById('stat-blocked-shorts'),
+  statLearningCount: document.getElementById('stat-learning-count'),
+  // Player Workspace
+  playerWorkspace: document.getElementById('player-workspace'),
+  playerStage: document.getElementById('player-stage'),
+  playerShield: document.getElementById('player-shield'),
+  focusOverlay: document.getElementById('focus-overlay'),
+  overlayBadge: document.getElementById('overlay-badge'),
+  overlayHeading: document.getElementById('overlay-heading'),
+  overlaySubtext: document.getElementById('overlay-subtext'),
+  overlayQuickNote: document.getElementById('overlay-quick-note'),
+  btnOverlaySaveNote: document.getElementById('btn-overlay-save-note'),
+  btnOverlayResume: document.getElementById('btn-overlay-resume'),
+  btnOverlayBack: document.getElementById('btn-overlay-back'),
+  playerCategoryBadge: document.getElementById('player-category-badge'),
+  playerVideoTitle: document.getElementById('player-video-title'),
+  playerChannelName: document.getElementById('player-channel-name'),
+  playerTopic: document.getElementById('player-topic'),
+  playerDurationLabel: document.getElementById('player-duration-label'),
+  btnToggleWatched: document.getElementById('btn-toggle-watched'),
+  btnClosePlayer: document.getElementById('btn-close-player'),
+  ctrlCurrentTime: document.getElementById('ctrl-current-time'),
+  ctrlTotalTime: document.getElementById('ctrl-total-time'),
+  ctrlScrubber: document.getElementById('ctrl-scrubber'),
+  ctrlPlayPause: document.getElementById('ctrl-play-pause'),
+  ctrlBack15: document.getElementById('ctrl-back-15'),
+  ctrlFwd15: document.getElementById('ctrl-fwd-15'),
+  ctrlMute: document.getElementById('ctrl-mute'),
+  ctrlFullscreen: document.getElementById('ctrl-fullscreen'),
+  speedButtons: document.querySelectorAll('.speed-btn'),
+  playerChaptersList: document.getElementById('player-chapters-list'),
+  companionNoteInput: document.getElementById('companion-note-input'),
+  btnSaveCompanionNote: document.getElementById('btn-save-companion-note'),
+  noteTimestampPreview: document.getElementById('note-timestamp-preview'),
+  playerNotesList: document.getElementById('player-notes-list'),
+  btnPlayerObsidian: document.getElementById('btn-player-obsidian'),
+  btnPlayerObsidianFile: document.getElementById('btn-player-obsidian-file'),
+  btnPlayerCopyMd: document.getElementById('btn-player-copy-md'),
+  playerObsidianStatus: document.getElementById('player-obsidian-status'),
+  aiTranscriptInput: document.getElementById('ai-transcript-input'),
+  btnAiSummarize: document.getElementById('btn-ai-summarize'),
+  aiSummaryOutput: document.getElementById('ai-summary-output'),
+  // Dashboard
+  btnDashTimerToggle: document.getElementById('btn-dash-timer-toggle'),
+  kpiFocusRatio: document.getElementById('kpi-focus-ratio'),
+  kpiWeekLearning: document.getElementById('kpi-week-learning'),
+  kpiTodayLearning: document.getElementById('kpi-today-learning'),
+  kpiWeekEntertainment: document.getElementById('kpi-week-entertainment'),
+  kpiTodayEntertainment: document.getElementById('kpi-today-entertainment'),
+  weeklyChart: document.getElementById('weekly-chart'),
+  inputLearningGoal: document.getElementById('input-learning-goal'),
+  inputEntertainmentLimit: document.getElementById('input-entertainment-limit'),
+  btnSaveBudgets: document.getElementById('btn-save-budgets'),
+  blockedShortsList: document.getElementById('blocked-shorts-list'),
+  // Channels
+  channelSummaryBadges: document.getElementById('channel-summary-badges'),
+  formAddChannel: document.getElementById('form-add-channel'),
+  newChannelName: document.getElementById('new-channel-name'),
+  newChannelHandle: document.getElementById('new-channel-handle'),
+  newChannelCategory: document.getElementById('new-channel-category'),
+  newChannelTopic: document.getElementById('new-channel-topic'),
+  channelManagerList: document.getElementById('channel-manager-list'),
+  // Notes
+  notesCountBadge: document.getElementById('notes-count-badge'),
+  allNotesContainer: document.getElementById('all-notes-container'),
+  btnExportNotes: document.getElementById('btn-export-notes'),
+  btnExportObsidianAll: document.getElementById('btn-export-obsidian-all'),
+  // Sync Modal
+  btnOpenSync: document.getElementById('btn-open-sync'),
+  btnCloseSync: document.getElementById('btn-close-sync'),
+  syncModal: document.getElementById('sync-modal'),
+  syncStatusDot: document.getElementById('sync-status-dot'),
+  syncStatusText: document.getElementById('sync-status-text'),
+  inputOauthClientId: document.getElementById('input-oauth-client-id'),
+  inputYtApiKey: document.getElementById('input-yt-api-key'),
+  inputGeminiApiKey: document.getElementById('input-gemini-api-key'),
+  selectGeminiModel: document.getElementById('select-gemini-model'),
+  inputObsidianVault: document.getElementById('input-obsidian-vault'),
+  inputObsidianFolder: document.getElementById('input-obsidian-folder'),
+  btnPickObsidianDir: document.getElementById('btn-pick-obsidian-dir'),
+  obsidianDirStatus: document.getElementById('obsidian-dir-status'),
+  btnSaveApiConfig: document.getElementById('btn-save-api-config'),
+  btnGoogleLogin: document.getElementById('btn-google-login'),
+  btnFetchUuUploads: document.getElementById('btn-fetch-uu-uploads')
+};
+
+// --- KANAL- UND VIDEODATEN-AUFBEREITUNG ---
+function getChannelCategory(handle) {
+  const ch = state.channels.find((c) => c.handle.toLowerCase() === String(handle).toLowerCase());
+  return ch ? ch.category : 'learning';
+}
+
+function getChannelQualityBase(handle) {
+  const ch = state.channels.find((c) => c.handle.toLowerCase() === String(handle).toLowerCase());
+  return ch ? ch.qualityBase || 80 : 75;
+}
+
+function getDisplayTitle(video) {
+  if (state.calmTitles) {
+    return video.calmTitle || calmTitleTransform(video.originalTitle);
+  }
+  return video.originalTitle || video.calmTitle;
+}
+
+function findVideoById(videoId) {
+  return (
+    state.videos.find((v) => v.id === videoId) ||
+    (state.discoveryResults || []).find((v) => v.id === videoId) ||
+    null
+  );
+}
+
+function hasClickbaitSignals(title = '') {
+  const exclamations = (title.match(/[!？?🔥⚠️😱🤯🚀💰]/g) || []).length;
+  const upperWords = (title.match(/\b[A-ZÄÖÜ]{4,}\b/g) || []).length;
+  return exclamations >= 2 || upperWords >= 2;
+}
+
+function computeDensityBonus(durationSec, pref = state.densityPreference || 'dense') {
+  if (!durationSec || durationSec < 60) return 0;
+  if (pref === 'dense') {
+    if (durationSec >= 360 && durationSec <= 1320) return 22; // 6–22 Min.: maximale Dichte
+    if (durationSec > 1320 && durationSec <= 1920) return 12; // 22–32 Min.
+    if (durationSec > 1920 && durationSec <= 2700) return 4; // 32–45 Min.
+    if (durationSec > 2700) return -6; // Überlänge leicht abwerten
+    return 6;
+  }
+  if (pref === 'balanced') {
+    if (durationSec >= 600 && durationSec <= 2100) return 20;
+    if (durationSec >= 360 && durationSec <= 2880) return 11;
+    return 3;
+  }
+  // deepdive
+  if (durationSec >= 1500 && durationSec <= 5400) return 20;
+  if (durationSec >= 720) return 12;
+  return 4;
+}
+
+function computeFocusScore(video) {
+  const base = getChannelQualityBase(video.channelHandle);
+  const chapters = Array.isArray(video.chapters) ? video.chapters : [];
+  const hasChapters = chapters.length >= 2;
+  const goalMatch = state.activeGoals.includes(video.topic);
+
+  if (state.mode === 'entertainment') {
+    const chapterBonus = hasChapters ? 10 : 0;
+    return Math.min(99, Math.round(base * 0.8 + chapterBonus));
+  }
+
+  const goalBonus = goalMatch ? 22 : 0;
+  const densityBonus = computeDensityBonus(video.durationSec);
+  const chaptersPer10Min = video.durationSec > 0 ? chapters.length / Math.max(1, video.durationSec / 600) : 0;
+  const structureBonus = chaptersPer10Min >= 2.2 ? 18 : hasChapters ? 11 : 0;
+  const clickbaitPenalty = hasClickbaitSignals(video.originalTitle || '') ? -10 : 0;
+
+  let raw = Math.round(base * 0.42 + goalBonus + densityBonus + structureBonus + clickbaitPenalty);
+  if (typeof video.aiDensityScore === 'number') {
+    raw = Math.round(raw * 0.55 + video.aiDensityScore * 0.45);
+  }
+  return Math.max(10, Math.min(99, raw));
+}
+
+function getFilteredVideos({ applyFloodBrake = true, sortByScore = true, channelFilter = 'all' } = {}) {
+  const query = (els.algoSearchInput?.value || '').trim().toLowerCase();
+  const durationFilter = els.algoDurationFilter?.value || 'all';
+
+  let list = state.videos
+    .map((v) => {
+      const channelCat = getChannelCategory(v.channelHandle);
+      return {
+        ...v,
+        effectiveCategory: channelCat,
+        focusScore: computeFocusScore(v)
+      };
+    })
+    .filter((v) => {
+      if (v.effectiveCategory === 'muted') return false;
+      if (v.effectiveCategory !== state.mode) return false;
+      if (v.durationSec > 0 && v.durationSec < 60) return false; // Shorts hart blocken
+      if (state.hideWatched && state.watchedIds.includes(v.id)) return false;
+      if (channelFilter !== 'all' && v.channelHandle !== channelFilter) return false;
+
+      if (sortByScore && query) {
+        const haystack = `${v.calmTitle} ${v.originalTitle} ${v.channelName} ${v.topic}`.toLowerCase();
+        if (!haystack.includes(query)) return false;
+      }
+
+      if (sortByScore && durationFilter !== 'all') {
+        if (durationFilter === 'compact' && (v.durationSec < 360 || v.durationSec > 22 * 60)) return false;
+        if (durationFilter === 'medium' && (v.durationSec <= 22 * 60 || v.durationSec > 38 * 60)) return false;
+        if (durationFilter === 'long' && v.durationSec <= 38 * 60) return false;
+      }
+
+      return true;
+    });
+
+  if (sortByScore) {
+    list.sort((a, b) => b.focusScore - a.focusScore);
+  } else {
+    list.sort((a, b) => (a.publishedOrder ?? 999) - (b.publishedOrder ?? 999));
+  }
+
+  if (applyFloodBrake && state.floodBrake && channelFilter === 'all') {
+    const counts = {};
+    list = list.filter((v) => {
+      const key = v.channelHandle.toLowerCase();
+      counts[key] = (counts[key] || 0) + 1;
+      return counts[key] <= 2;
+    });
+  }
+
+  return list;
+}
+
+function isEntertainmentLocked() {
+  const today = getDateKey();
+  const used = state.dailyLogs[today]?.entertainmentSec || 0;
+  const limit = state.budgets.entertainmentLimitMin * 60;
+  return state.mode === 'entertainment' && used >= limit;
+}
+
+// --- LIVE TIMER & BUDGET LOGIK ---
+function updateTimerUI() {
+  const today = getDateKey();
+  const log = state.dailyLogs[today] || { learningSec: 0, entertainmentSec: 0 };
+  const isRunning = isVideoPlaying || manualTimerActive;
+
+  els.liveTimerPill.classList.remove('learning', 'entertainment', 'running', 'expired');
+  els.liveTimerPill.classList.add(state.mode);
+  if (isRunning) els.liveTimerPill.classList.add('running');
+
+  if (state.mode === 'learning') {
+    const goalSec = state.budgets.learningGoalMin * 60;
+    els.timerPillText.textContent = `Lernzeit heute: ${formatMMSS(log.learningSec)} / ${formatMMSS(goalSec)} Ziel`;
+  } else {
+    const limitSec = state.budgets.entertainmentLimitMin * 60;
+    const remaining = Math.max(0, limitSec - log.entertainmentSec);
+    els.timerPillText.textContent = `Unterhaltungs-Budget: ${formatMMSS(remaining)} verbleibend`;
+    if (remaining === 0) {
+      els.liveTimerPill.classList.add('expired');
+    }
+  }
+
+  if (manualTimerActive) {
+    els.timerStateBadge.textContent = 'Läuft';
+  } else if (isVideoPlaying) {
+    els.timerStateBadge.textContent = 'Video';
+  } else {
+    els.timerStateBadge.textContent = 'Pause';
+  }
+
+  if (els.btnDashTimerToggle) {
+    els.btnDashTimerToggle.textContent = manualTimerActive
+      ? '⏸ Session-Timer pausieren'
+      : '▶ Session-Timer starten';
+  }
+}
+
+setInterval(() => {
+  if (!isVideoPlaying && !manualTimerActive) return;
+
+  const today = getDateKey();
+  if (!state.dailyLogs[today]) {
+    state.dailyLogs[today] = { learningSec: 0, entertainmentSec: 0 };
+  }
+
+  if (state.mode === 'learning') {
+    state.dailyLogs[today].learningSec += 1;
+  } else {
+    state.dailyLogs[today].entertainmentSec += 1;
+    const limitSec = state.budgets.entertainmentLimitMin * 60;
+    if (state.dailyLogs[today].entertainmentSec >= limitSec) {
+      manualTimerActive = false;
+      if (ytPlayer && isVideoPlaying) {
+        try {
+          ytPlayer.pauseVideo();
+        } catch {
+          // Player evtl. nicht bereit
+        }
+      }
+      isVideoPlaying = false;
+      renderAllViews();
+    }
+  }
+
+  saveState();
+  updateTimerUI();
+  if (state.activeTab === 'dashboard') {
+    renderDashboard();
+  }
+}, 1000);
+
+// --- YOUTUBE IFRAME PLAYER & SCHUTZSCHILD ---
+function loadYouTubeIframeApi() {
+  if (window.YT && window.YT.Player) {
+    ytApiReady = true;
+    return;
+  }
+  if (document.querySelector('script[src="https://www.youtube.com/iframe_api"]')) return;
+  const tag = document.createElement('script');
+  tag.src = 'https://www.youtube.com/iframe_api';
+  document.head.appendChild(tag);
+}
+
+window.onYouTubeIframeAPIReady = function () {
+  ytApiReady = true;
+  if (pendingVideoToLoad) {
+    const id = pendingVideoToLoad;
+    pendingVideoToLoad = null;
+    initOrLoadYtPlayer(id);
+  }
+};
+
+function initOrLoadYtPlayer(videoId) {
+  if (!ytApiReady || !window.YT || !window.YT.Player) {
+    pendingVideoToLoad = videoId;
+    loadYouTubeIframeApi();
+    return;
+  }
+
+  if (ytPlayer && typeof ytPlayer.loadVideoById === 'function') {
+    ytPlayer.loadVideoById(videoId);
+    ytPlayer.setPlaybackRate(playbackRate);
+    return;
+  }
+
+  const playerVars = {
+    controls: 0,
+    rel: 0,
+    modestbranding: 1,
+    iv_load_policy: 3,
+    disablekb: 1,
+    fs: 0,
+    playsinline: 1
+  };
+  if (window.location.protocol.startsWith('http')) {
+    playerVars.origin = window.location.origin;
+  }
+
+  ytPlayer = new window.YT.Player('yt-player-container', {
+    videoId,
+    playerVars,
+    events: {
+      onReady: (e) => {
+        e.target.setPlaybackRate(playbackRate);
+        e.target.playVideo();
+      },
+      onStateChange: handlePlayerStateChange,
+      onError: () => {
+        showFocusOverlay('ended', 'Einbetten vom Kanal deaktiviert', 'Dieses Video erlaubt kein externes Einbetten. Du kannst es direkt über deinen YouTube-Tab ansehen und Notizen trotzdem hier festhalten.');
+      }
+    }
+  });
+}
+
+function handlePlayerStateChange(event) {
+  const YTState = window.YT?.PlayerState;
+  if (!YTState) return;
+
+  if (event.data === YTState.PLAYING) {
+    isVideoPlaying = true;
+    endScreenTriggered = false;
+    hideFocusOverlay();
+    els.ctrlPlayPause.textContent = '⏸ Pause';
+    startScrubberPoll();
+    updateTimerUI();
+  } else if (event.data === YTState.PAUSED) {
+    isVideoPlaying = false;
+    els.ctrlPlayPause.textContent = '▶ Play';
+    stopScrubberPoll();
+    updateTimerUI();
+    if (!endScreenTriggered) {
+      showFocusOverlay(
+        'pause',
+        'Kurze Lern-Reflexion',
+        'Kein Weiterklicken in den Algorithmus. Notiere deinen wichtigsten Gedanken oder setze das Video gezielt fort.'
+      );
+    }
+  } else if (event.data === YTState.ENDED) {
+    isVideoPlaying = false;
+    endScreenTriggered = true;
+    els.ctrlPlayPause.textContent = '▶ Play';
+    stopScrubberPoll();
+    markVideoWatched(activeVideoId, true);
+    showFocusOverlay(
+      'ended',
+      'Video abgeschlossen — Was nimmst du mit?',
+      'YouTube-Endscreen-Vorschläge wurden abgefangen. Halte deine Kern-Erkenntnis fest oder kehre bewusst zur Übersicht zurück.'
+    );
+    updateTimerUI();
+  }
+}
+
+function showFocusOverlay(mode, heading, subtext) {
+  els.overlayBadge.textContent =
+    mode === 'ended'
+      ? '✅ Video abgeschlossen — Endscreen-Vorschläge abgefangen'
+      : '⏸️ Fokus-Pause — YouTube-Vorschläge blockiert';
+  els.overlayHeading.textContent = heading;
+  els.overlaySubtext.textContent = subtext;
+  els.focusOverlay.classList.remove('hidden');
+}
+
+function hideFocusOverlay() {
+  els.focusOverlay.classList.add('hidden');
+}
+
+function startScrubberPoll() {
+  stopScrubberPoll();
+  scrubberPollTimer = setInterval(() => {
+    if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
+    const current = ytPlayer.getCurrentTime() || 0;
+    const duration = ytPlayer.getDuration() || lastVideoDuration || 0;
+    lastVideoDuration = duration;
+
+    els.ctrlCurrentTime.textContent = formatMMSS(current);
+    els.ctrlTotalTime.textContent = formatMMSS(duration);
+    els.noteTimestampPreview.textContent = formatMMSS(current);
+
+    if (duration > 0) {
+      els.ctrlScrubber.value = String((current / duration) * 100);
+    }
+
+    // Aktives Kapitel hervorheben
+    highlightActiveChapter(current);
+
+    // WICHTIG: 1.5s vor Ende abfangen, damit YouTube niemals Endscreen-Empfehlungen rendert
+    if (duration > 5 && duration - current <= 1.5 && !endScreenTriggered) {
+      endScreenTriggered = true;
+      isVideoPlaying = false;
+      try {
+        ytPlayer.pauseVideo();
+      } catch {
+        // Ignore
+      }
+      markVideoWatched(activeVideoId, true);
+      showFocusOverlay(
+        'ended',
+        'Video abgeschlossen — Was nimmst du mit?',
+        'Kurz vor Schluss abgefangen: Keine YouTube-Empfehlungen im Player. Notiere deine Erkenntnis oder kehre zurück.'
+      );
+      updateTimerUI();
+    }
+  }, 250);
+}
+
+function stopScrubberPoll() {
+  if (scrubberPollTimer) {
+    clearInterval(scrubberPollTimer);
+    scrubberPollTimer = null;
+  }
+}
+
+function highlightActiveChapter(currentSec) {
+  const buttons = els.playerChaptersList.querySelectorAll('.chapter-item');
+  let activeIdx = -1;
+  buttons.forEach((btn, idx) => {
+    const start = parseFloat(btn.dataset.timeSec || '0');
+    if (currentSec >= start) activeIdx = idx;
+  });
+  buttons.forEach((btn, idx) => {
+    btn.classList.toggle('active', idx === activeIdx);
+  });
+}
+
+function openVideoInWorkspace(videoId) {
+  const video = findVideoById(videoId);
+  if (!video) return;
+
+  const effectiveCat = video.isDiscovery ? 'learning' : getChannelCategory(video.channelHandle);
+  if (effectiveCat === 'entertainment' && isEntertainmentLocked()) {
+    alert('Dein heutiges Unterhaltungs-Budget ist aufgebraucht. Wechsle in den Lern-Modus oder passe das Limit im Wochen-Dashboard an.');
+    return;
+  }
+
+  // Falls Nutzer direkt aus dem Abo-Manager o. ä. ein Video eines anderen Modus öffnet, Modus angleichen
+  if (effectiveCat === 'learning' || effectiveCat === 'entertainment') {
+    if (state.mode !== effectiveCat) {
+      setMode(effectiveCat);
+    }
+  }
+
+  activeVideoId = video.id;
+  lastVideoDuration = video.durationSec || 0;
+  endScreenTriggered = false;
+
+  els.playerWorkspace.classList.remove('hidden');
+  els.playerCategoryBadge.className = `category-badge ${effectiveCat}`;
+  els.playerCategoryBadge.textContent = effectiveCat === 'learning' ? '🎓 Lernen' : '🍿 Unterhaltung';
+  els.playerVideoTitle.textContent = getDisplayTitle(video);
+  els.playerChannelName.textContent = video.channelName;
+  els.playerTopic.textContent = video.topic;
+  els.playerDurationLabel.textContent = video.durationText || formatMMSS(video.durationSec);
+  els.ctrlCurrentTime.textContent = '00:00';
+  els.ctrlTotalTime.textContent = video.durationText || '00:00';
+  els.ctrlScrubber.value = '0';
+  els.noteTimestampPreview.textContent = '00:00';
+  if (els.playerObsidianStatus) els.playerObsidianStatus.textContent = '';
+  if (els.aiTranscriptInput) els.aiTranscriptInput.value = '';
+  renderAiSummaryBox(video.id);
+
+  updateWatchedButtonUI();
+  renderPlayerChapters(video);
+  renderPlayerNotes(video.id);
+  hideFocusOverlay();
+
+  initOrLoadYtPlayer(video.id);
+  els.playerWorkspace.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closePlayerWorkspace() {
+  if (ytPlayer && typeof ytPlayer.pauseVideo === 'function') {
+    try {
+      ytPlayer.pauseVideo();
+    } catch {
+      // Ignore
+    }
+  }
+  isVideoPlaying = false;
+  stopScrubberPoll();
+  hideFocusOverlay();
+  els.playerWorkspace.classList.add('hidden');
+  activeVideoId = null;
+  updateTimerUI();
+}
+
+function togglePlayPause() {
+  if (!ytPlayer || typeof ytPlayer.getPlayerState !== 'function') return;
+  const YTState = window.YT?.PlayerState;
+  const st = ytPlayer.getPlayerState();
+  if (st === YTState?.PLAYING) {
+    ytPlayer.pauseVideo();
+  } else {
+    const duration = ytPlayer.getDuration() || lastVideoDuration || 0;
+    const current = ytPlayer.getCurrentTime() || 0;
+    if (duration > 5 && duration - current <= 2) {
+      ytPlayer.seekTo(0, true);
+    }
+    endScreenTriggered = false;
+    hideFocusOverlay();
+    ytPlayer.playVideo();
+  }
+}
+
+function seekRelative(deltaSec) {
+  if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
+  const current = ytPlayer.getCurrentTime() || 0;
+  const duration = ytPlayer.getDuration() || lastVideoDuration || 0;
+  const target = Math.max(0, Math.min(duration || current + deltaSec, current + deltaSec));
+  ytPlayer.seekTo(target, true);
+  els.ctrlCurrentTime.textContent = formatMMSS(target);
+}
+
+function markVideoWatched(videoId, forceWatched = null) {
+  if (!videoId) return;
+  const exists = state.watchedIds.includes(videoId);
+  const shouldWatch = forceWatched !== null ? forceWatched : !exists;
+  if (shouldWatch && !exists) {
+    state.watchedIds.push(videoId);
+  } else if (!shouldWatch && exists) {
+    state.watchedIds = state.watchedIds.filter((id) => id !== videoId);
+  }
+  saveState();
+  updateWatchedButtonUI();
+  renderVideoViews();
+}
+
+function updateWatchedButtonUI() {
+  const watched = activeVideoId && state.watchedIds.includes(activeVideoId);
+  els.btnToggleWatched.textContent = watched ? '✓ Gesehen (Rückgängig)' : '✓ Als gesehen markieren';
+}
+
+function renderPlayerChapters(video) {
+  const chapters = video.chapters && video.chapters.length > 0
+    ? video.chapters
+    : [{ timeSec: 0, label: 'Vollständiges Video' }];
+
+  els.playerChaptersList.innerHTML = chapters
+    .map(
+      (ch) => `
+      <li>
+        <button class="chapter-item" data-time-sec="${ch.timeSec}">
+          <span class="chapter-time">${formatMMSS(ch.timeSec)}</span>
+          <span>${escapeHtml(ch.label)}</span>
+        </button>
+      </li>
+    `
+    )
+    .join('');
+
+  els.playerChaptersList.querySelectorAll('.chapter-item').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const sec = parseFloat(btn.dataset.timeSec || '0');
+      if (ytPlayer && typeof ytPlayer.seekTo === 'function') {
+        endScreenTriggered = false;
+        hideFocusOverlay();
+        ytPlayer.seekTo(sec, true);
+        ytPlayer.playVideo();
+      }
+    });
+  });
+}
+
+// --- NOTIZEN ---
+function addNoteForActiveVideo(text) {
+  const trimmed = (text || '').trim();
+  if (!trimmed || !activeVideoId) return;
+
+  let timeSec = 0;
+  if (ytPlayer && typeof ytPlayer.getCurrentTime === 'function') {
+    timeSec = Math.floor(ytPlayer.getCurrentTime() || 0);
+  }
+
+  if (!state.notesByVideo[activeVideoId]) {
+    state.notesByVideo[activeVideoId] = [];
+  }
+
+  state.notesByVideo[activeVideoId].push({
+    id: `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    timeSec,
+    text: trimmed,
+    createdAt: new Date().toISOString()
+  });
+
+  state.notesByVideo[activeVideoId].sort((a, b) => a.timeSec - b.timeSec);
+  saveState();
+  renderPlayerNotes(activeVideoId);
+  renderAllNotesTab();
+}
+
+function deleteNote(videoId, noteId) {
+  if (!state.notesByVideo[videoId]) return;
+  state.notesByVideo[videoId] = state.notesByVideo[videoId].filter((n) => n.id !== noteId);
+  if (state.notesByVideo[videoId].length === 0) {
+    delete state.notesByVideo[videoId];
+  }
+  saveState();
+  if (activeVideoId === videoId) renderPlayerNotes(videoId);
+  renderAllNotesTab();
+}
+
+function renderPlayerNotes(videoId) {
+  const notes = state.notesByVideo[videoId] || [];
+  if (notes.length === 0) {
+    els.playerNotesList.innerHTML = `<li class="panel-hint">Noch keine Notizen zu diesem Video.</li>`;
+    return;
+  }
+
+  els.playerNotesList.innerHTML = notes
+    .map(
+      (n) => `
+      <li class="note-item">
+        <button class="note-jump-btn" data-jump-sec="${n.timeSec}">${formatMMSS(n.timeSec)}</button>
+        <span class="note-text">${escapeHtml(n.text)}</span>
+        <button class="note-delete-btn" data-del-note="${n.id}" title="Notiz löschen">✕</button>
+      </li>
+    `
+    )
+    .join('');
+
+  els.playerNotesList.querySelectorAll('[data-jump-sec]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const sec = parseInt(btn.dataset.jumpSec || '0', 10);
+      if (ytPlayer && typeof ytPlayer.seekTo === 'function') {
+        endScreenTriggered = false;
+        hideFocusOverlay();
+        ytPlayer.seekTo(sec, true);
+        ytPlayer.playVideo();
+      }
+    });
+  });
+
+  els.playerNotesList.querySelectorAll('[data-del-note]').forEach((btn) => {
+    btn.addEventListener('click', () => deleteNote(videoId, btn.dataset.delNote));
+  });
+}
+
+function renderAllNotesTab() {
+  const entries = Object.entries(state.notesByVideo);
+  const totalCount = entries.reduce((sum, [, arr]) => sum + arr.length, 0);
+  els.notesCountBadge.textContent = String(totalCount);
+
+  if (totalCount === 0) {
+    els.allNotesContainer.innerHTML = `
+      <div class="panel-card">
+        <h3>Noch keine Lern-Notizen vorhanden</h3>
+        <p class="panel-hint">Öffne ein Video und speichere Erkenntnisse direkt neben dem Player mit Zeitstempel.</p>
+      </div>
+    `;
+    return;
+  }
+
+  els.allNotesContainer.innerHTML = entries
+    .map(([videoId, notes]) => {
+      const video = findVideoById(videoId);
+      const title = video ? getDisplayTitle(video) : `Video ${videoId}`;
+      const channel = video ? video.channelName : '';
+      return `
+        <div class="note-group-card">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+            <div>
+              <h3>${escapeHtml(title)}</h3>
+              <p class="panel-hint">${escapeHtml(channel)}</p>
+            </div>
+            <button class="btn btn-obsidian" style="padding:4px 8px; font-size:0.75rem;" data-obsidian-video="${escapeHtml(videoId)}">🟣 Obsidian</button>
+          </div>
+          <ul class="notes-list">
+            ${notes
+              .map(
+                (n) => `
+              <li class="note-item">
+                <button class="note-jump-btn" data-open-video="${videoId}" data-jump-sec="${n.timeSec}">
+                  ${formatMMSS(n.timeSec)}
+                </button>
+                <span class="note-text">${escapeHtml(n.text)}</span>
+                <button class="note-delete-btn" data-del-video="${videoId}" data-del-id="${n.id}">✕</button>
+              </li>
+            `
+              )
+              .join('')}
+          </ul>
+        </div>
+      `;
+    })
+    .join('');
+
+  els.allNotesContainer.querySelectorAll('[data-open-video]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const vId = btn.dataset.openVideo;
+      const sec = parseInt(btn.dataset.jumpSec || '0', 10);
+      openVideoInWorkspace(vId);
+      setTimeout(() => {
+        if (ytPlayer && typeof ytPlayer.seekTo === 'function') {
+          ytPlayer.seekTo(sec, true);
+        }
+      }, 600);
+    });
+  });
+
+  els.allNotesContainer.querySelectorAll('[data-del-id]').forEach((btn) => {
+    btn.addEventListener('click', () => deleteNote(btn.dataset.delVideo, btn.dataset.delId));
+  });
+
+  els.allNotesContainer.querySelectorAll('[data-obsidian-video]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const v = findVideoById(btn.dataset.obsidianVideo);
+      if (!v) return;
+      const md = buildVideoObsidianMarkdown(v);
+      openInObsidianUri(sanitizeFilename(getDisplayTitle(v)), md);
+    });
+  });
+}
+
+// --- RENDERING DER VIEWS ---
+function setMode(mode) {
+  state.mode = mode;
+  els.body.classList.toggle('mode-learning', mode === 'learning');
+  els.body.classList.toggle('mode-entertainment', mode === 'entertainment');
+  els.btnModeLearning.classList.toggle('active', mode === 'learning');
+  els.btnModeEntertainment.classList.toggle('active', mode === 'entertainment');
+  saveState();
+  updateTimerUI();
+  renderVideoViews();
+  renderFeedChannelFilter();
+}
+
+function setTab(tabName) {
+  state.activeTab = tabName;
+  els.navTabs.forEach((btn) => btn.classList.toggle('active', btn.dataset.tab === tabName));
+  els.tabPanels.forEach((panel) => panel.classList.toggle('active', panel.id === `tab-${tabName}`));
+  saveState();
+
+  if (tabName === 'dashboard') renderDashboard();
+  if (tabName === 'channels') renderChannelManager();
+  if (tabName === 'notes') renderAllNotesTab();
+}
+
+function renderLearningGoals() {
+  els.learningGoalsChips.innerHTML = LEARNING_GOALS.map((goal) => {
+    const active = state.activeGoals.includes(goal.id);
+    return `
+      <button class="goal-chip ${active ? 'active' : ''}" data-goal-id="${escapeHtml(goal.id)}" title="${escapeHtml(goal.description)}">
+        ${active ? '✓ ' : ''}${escapeHtml(goal.label)}
+      </button>
+    `;
+  }).join('');
+
+  els.learningGoalsChips.querySelectorAll('.goal-chip').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.goalId;
+      if (state.activeGoals.includes(id)) {
+        state.activeGoals = state.activeGoals.filter((g) => g !== id);
+      } else {
+        state.activeGoals.push(id);
+      }
+      saveState();
+      renderLearningGoals();
+      renderVideoViews();
+    });
+  });
+}
+
+function createVideoCardHtml(video, showFocusScore = true) {
+  const isWatched = state.watchedIds.includes(video.id);
+  const title = getDisplayTitle(video);
+  const cat = video.effectiveCategory || getChannelCategory(video.channelHandle);
+  const thumbUrl = video.thumbnail || `https://i.ytimg.com/vi/${encodeURIComponent(video.id)}/hqdefault.jpg`;
+
+  return `
+    <article class="video-card ${isWatched ? 'watched' : ''}" data-video-id="${escapeHtml(video.id)}">
+      <div class="video-thumb" data-play-video="${escapeHtml(video.id)}">
+        <img src="${thumbUrl}" alt="${escapeHtml(title)}" loading="lazy" />
+        ${showFocusScore ? `<span class="score-badge">Focus ${video.focusScore}</span>` : ''}
+        <span class="duration-badge">${escapeHtml(video.durationText || formatMMSS(video.durationSec))}</span>
+      </div>
+      <div class="video-body">
+        <div class="video-meta-top">
+          <span class="category-badge ${cat}">${cat === 'learning' ? '🎓 Lernen' : '🍿 Unterhaltung'}</span>
+          <span>${escapeHtml(video.topic)}</span>
+        </div>
+        <h3 class="video-title" data-play-video="${escapeHtml(video.id)}">${escapeHtml(title)}</h3>
+        <p class="video-reason">${escapeHtml(video.whyRecommended || 'Aus deinen abonnierten Kanälen')}</p>
+        <div class="video-footer">
+          <span><strong>${escapeHtml(video.channelName)}</strong> · ${escapeHtml(video.publishedText || '')}</span>
+          <button class="btn-link" data-mark-watched="${escapeHtml(video.id)}">
+            ${isWatched ? '✓ Gesehen' : 'Als gesehen'}
+          </button>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function attachVideoCardHandlers(container) {
+  container.querySelectorAll('[data-play-video]').forEach((el) => {
+    el.addEventListener('click', () => openVideoInWorkspace(el.dataset.playVideo));
+  });
+  container.querySelectorAll('[data-mark-watched]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      markVideoWatched(btn.dataset.markWatched);
+    });
+  });
+}
+
+function renderLockNoticeHtml() {
+  return `
+    <h2>⏱️ Tagesbudget für Unterhaltung erreicht</h2>
+    <p>
+      Dein eingestelltes Unterhaltungs-Limit (${state.budgets.entertainmentLimitMin} Min.) ist für heute aufgebraucht.
+      Zeit für eine Pause oder gezielten Wissensaufbau im Lern-Modus.
+    </p>
+    <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
+      <button class="btn btn-primary" data-lock-switch-learning>🎓 Zu Lernen wechseln</button>
+      <button class="btn btn-secondary" data-lock-open-dashboard>Limit im Dashboard anpassen</button>
+    </div>
+  `;
+}
+
+function bindLockHandlers(container) {
+  container.querySelector('[data-lock-switch-learning]')?.addEventListener('click', () => setMode('learning'));
+  container.querySelector('[data-lock-open-dashboard]')?.addEventListener('click', () => setTab('dashboard'));
+}
+
+function renderVideoViews() {
+  const locked = isEntertainmentLocked();
+
+  // 1. Algorithmus-Grid
+  if (locked) {
+    els.entertainmentLockNotice.innerHTML = renderLockNoticeHtml();
+    els.entertainmentLockNotice.classList.remove('hidden');
+    bindLockHandlers(els.entertainmentLockNotice);
+    els.algorithmVideoGrid.innerHTML = '';
+  } else {
+    els.entertainmentLockNotice.classList.add('hidden');
+    const algoVideos = getFilteredVideos({ applyFloodBrake: true, sortByScore: true });
+    els.statLearningCount.textContent = String(algoVideos.length);
+    els.statBlockedShorts.textContent = String(BLOCKED_SHORTS_SAMPLE.length);
+
+    if (algoVideos.length === 0) {
+      els.algorithmVideoGrid.innerHTML = `<div class="panel-card"><h3>Keine Treffer für diesen Filter</h3><p class="panel-hint">Passe deine Lernziele, Suche oder Videolänge an.</p></div>`;
+    } else {
+      els.algorithmVideoGrid.innerHTML = algoVideos.map((v) => createVideoCardHtml(v, true)).join('');
+      attachVideoCardHandlers(els.algorithmVideoGrid);
+    }
+  }
+
+  // 2. Chronologischer Abo-Feed
+  if (locked) {
+    els.feedLockNotice.innerHTML = renderLockNoticeHtml();
+    els.feedLockNotice.classList.remove('hidden');
+    bindLockHandlers(els.feedLockNotice);
+    els.feedVideoGrid.innerHTML = '';
+  } else {
+    els.feedLockNotice.classList.add('hidden');
+    const channelFilter = els.feedChannelFilter.value || 'all';
+    const feedVideos = getFilteredVideos({ applyFloodBrake: true, sortByScore: false, channelFilter });
+    els.feedModeDescription.textContent =
+      state.mode === 'learning'
+        ? 'Chronologische Uploads deiner Lern-Kanäle (Shorts sind dauerhaft blockiert).'
+        : 'Chronologische Uploads deiner Unterhaltungs-Kanäle innerhalb deines Tageslimits.';
+
+    if (feedVideos.length === 0) {
+      els.feedVideoGrid.innerHTML = `<div class="panel-card"><h3>Keine Videos in diesem Filter</h3><p class="panel-hint">Prüfe die Kanal-Auswahl oder schalte stummgeschaltete Kanäle im Abo-Manager wieder frei.</p></div>`;
+    } else {
+      els.feedVideoGrid.innerHTML = feedVideos.map((v) => createVideoCardHtml(v, false)).join('');
+      attachVideoCardHandlers(els.feedVideoGrid);
+    }
+  }
+}
+
+function renderFeedChannelFilter() {
+  const channelsInMode = state.channels.filter((c) => c.category === state.mode);
+  const currentVal = els.feedChannelFilter.value;
+  els.feedChannelFilter.innerHTML =
+    `<option value="all">Alle Kanäle im Modus (${channelsInMode.length})</option>` +
+    channelsInMode
+      .map((c) => `<option value="${escapeHtml(c.handle)}">${escapeHtml(c.name)} (${escapeHtml(c.topic)})</option>`)
+      .join('');
+  if (channelsInMode.some((c) => c.handle === currentVal)) {
+    els.feedChannelFilter.value = currentVal;
+  } else {
+    els.feedChannelFilter.value = 'all';
+  }
+}
+
+// --- WOCHEN-DASHBOARD ---
+function renderDashboard() {
+  const week = getCurrentWeekDates();
+  const todayKey = getDateKey();
+
+  let weekLearnSec = 0;
+  let weekEntSec = 0;
+  const dayData = week.map((d) => {
+    const log = state.dailyLogs[d.key] || { learningSec: 0, entertainmentSec: 0 };
+    weekLearnSec += log.learningSec;
+    weekEntSec += log.entertainmentSec;
+    return { ...d, ...log };
+  });
+
+  const totalWeekSec = weekLearnSec + weekEntSec;
+  const ratio = totalWeekSec > 0 ? Math.round((weekLearnSec / totalWeekSec) * 100) : 100;
+
+  const todayLog = state.dailyLogs[todayKey] || { learningSec: 0, entertainmentSec: 0 };
+  els.kpiFocusRatio.textContent = `${ratio}%`;
+  els.kpiWeekLearning.textContent = `${Math.round(weekLearnSec / 60)} Min.`;
+  els.kpiTodayLearning.textContent = `Heute: ${formatMMSS(todayLog.learningSec)} / ${state.budgets.learningGoalMin} Min.`;
+  els.kpiWeekEntertainment.textContent = `${Math.round(weekEntSec / 60)} Min.`;
+  els.kpiTodayEntertainment.textContent = `Heute: ${formatMMSS(todayLog.entertainmentSec)} / ${state.budgets.entertainmentLimitMin} Min.`;
+
+  const maxMinutes = Math.max(
+    60,
+    ...dayData.map((d) => Math.max(Math.ceil(d.learningSec / 60), Math.ceil(d.entertainmentSec / 60)))
+  );
+
+  els.weeklyChart.innerHTML = dayData
+    .map((d) => {
+      const lMin = Math.round(d.learningSec / 60);
+      const eMin = Math.round(d.entertainmentSec / 60);
+      const lHeight = Math.max(3, Math.round((lMin / maxMinutes) * 165));
+      const eHeight = Math.max(3, Math.round((eMin / maxMinutes) * 165));
+      return `
+        <div class="chart-day ${d.isToday ? 'today' : ''}">
+          <span class="chart-day-mins">${lMin}/${eMin}m</span>
+          <div class="chart-bars">
+            <div class="bar learning" style="height:${lHeight}px" title="${d.label}: ${lMin} Min. Lernen"></div>
+            <div class="bar entertainment" style="height:${eHeight}px" title="${d.label}: ${eMin} Min. Unterhaltung"></div>
+          </div>
+          <span class="chart-day-label">${d.label}${d.isToday ? ' •' : ''}</span>
+        </div>
+      `;
+    })
+    .join('');
+
+  els.inputLearningGoal.value = String(state.budgets.learningGoalMin);
+  els.inputEntertainmentLimit.value = String(state.budgets.entertainmentLimitMin);
+
+  els.blockedShortsList.innerHTML = BLOCKED_SHORTS_SAMPLE.map(
+    (s) => `
+      <li>
+        <strong>${escapeHtml(s.title)}</strong>
+        <small>${escapeHtml(s.views)} · ${escapeHtml(s.reason)}</small>
+      </li>
+    `
+  ).join('');
+}
+
+// --- ABO-MANAGER ---
+function renderChannelManager() {
+  const counts = { learning: 0, entertainment: 0, muted: 0 };
+  state.channels.forEach((c) => {
+    counts[c.category] = (counts[c.category] || 0) + 1;
+  });
+
+  els.channelSummaryBadges.innerHTML = `
+    <span class="category-badge learning">🎓 ${counts.learning} Lernen</span>
+    <span class="category-badge entertainment">🍿 ${counts.entertainment} Unterhaltung</span>
+    <span class="toggle-chip">🔇 ${counts.muted} Stumm</span>
+  `;
+
+  els.channelManagerList.innerHTML = state.channels
+    .map(
+      (ch) => `
+      <div class="channel-card ${ch.category === 'muted' ? 'muted' : ''}">
+        <div class="channel-head">
+          <div>
+            <div class="channel-name">${escapeHtml(ch.name)}</div>
+            <div class="channel-handle">${escapeHtml(ch.handle)} · ${escapeHtml(ch.topic)}</div>
+          </div>
+          <span class="category-badge ${ch.category === 'learning' ? 'learning' : 'entertainment'}">
+            ${ch.category === 'learning' ? '🎓' : ch.category === 'entertainment' ? '🍿' : '🔇'}
+          </span>
+        </div>
+        <p class="channel-desc">${escapeHtml(ch.description || 'Abonnierter YouTube-Kanal')}</p>
+        <div class="channel-controls">
+          <select data-channel-category="${escapeHtml(ch.handle)}" class="select-input">
+            <option value="learning" ${ch.category === 'learning' ? 'selected' : ''}>🎓 Lernen</option>
+            <option value="entertainment" ${ch.category === 'entertainment' ? 'selected' : ''}>🍿 Unterhaltung</option>
+            <option value="muted" ${ch.category === 'muted' ? 'selected' : ''}>🔇 Stummschalten</option>
+          </select>
+          <a
+            href="https://www.youtube.com/${escapeHtml(ch.handle.startsWith('@') ? ch.handle : 'channel/' + ch.handle)}"
+            target="_blank"
+            rel="noopener"
+            class="btn btn-ghost"
+          >↗</a>
+        </div>
+      </div>
+    `
+    )
+    .join('');
+
+  els.channelManagerList.querySelectorAll('[data-channel-category]').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      const handle = sel.dataset.channelCategory;
+      const target = state.channels.find((c) => c.handle === handle);
+      if (target) {
+        target.category = sel.value;
+        saveState();
+        renderChannelManager();
+        renderFeedChannelFilter();
+        renderVideoViews();
+      }
+    });
+  });
+}
+
+// --- GOOGLE OAUTH 2.0 & YOUTUBE DATA API V3 (UU-PLAYLIST-TRICK) ---
+function updateSyncUi() {
+  const connected = Boolean(oauthAccessToken);
+  const hasAnyApi = connected || Boolean(state.apiConfig.apiKey || state.apiConfig.geminiKey);
+  els.syncStatusDot.className = `status-indicator ${hasAnyApi ? 'online' : 'offline'}`;
+  els.btnFetchUuUploads.disabled = !connected;
+  els.inputOauthClientId.value = state.apiConfig.clientId || '';
+  els.inputYtApiKey.value = state.apiConfig.apiKey || '';
+  if (els.inputGeminiApiKey) els.inputGeminiApiKey.value = state.apiConfig.geminiKey || '';
+  if (els.selectGeminiModel) els.selectGeminiModel.value = state.apiConfig.geminiModel || 'gemini-2.5-flash';
+  if (els.inputObsidianVault) els.inputObsidianVault.value = state.obsidianConfig.vaultName || '';
+  if (els.inputObsidianFolder) els.inputObsidianFolder.value = state.obsidianConfig.folder || 'FocusTube';
+  if (els.obsidianDirStatus) {
+    els.obsidianDirStatus.textContent = obsidianDirHandle
+      ? `Verknüpft mit lokalem Ordner: ${obsidianDirHandle.name}`
+      : 'Kein lokaler Ordner verknüpft (Standard: obsidian:// URI & .md Download)';
+  }
+}
+
+async function ytApiFetch(url) {
+  const headers = {};
+  if (oauthAccessToken) {
+    headers.Authorization = `Bearer ${oauthAccessToken}`;
+  }
+  const sep = url.includes('?') ? '&' : '?';
+  const fullUrl = state.apiConfig.apiKey ? `${url}${sep}key=${encodeURIComponent(state.apiConfig.apiKey)}` : url;
+  const res = await fetch(fullUrl, { headers });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`YouTube API Fehler (${res.status}): ${errText.slice(0, 140)}`);
+  }
+  return res.json();
+}
+
+async function syncSubscriptionsFromApi() {
+  els.syncStatusText.textContent = 'Lade deine echten Abonnements über YouTube Data API v3…';
+  try {
+    let pageToken = '';
+    const fetched = [];
+    for (let page = 0; page < 3; page++) {
+      const url = `https://www.googleapis.com/youtube/v3/subscriptions?part=snippet&mine=true&maxResults=50${
+        pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''
+      }`;
+      const data = await ytApiFetch(url);
+      (data.items || []).forEach((item) => {
+        const snip = item.snippet;
+        const channelId = snip?.resourceId?.channelId;
+        if (!channelId) return;
+        fetched.push({
+          channelId,
+          name: snip.title,
+          description: snip.description || ''
+        });
+      });
+      if (!data.nextPageToken) break;
+      pageToken = data.nextPageToken;
+    }
+
+    let added = 0;
+    fetched.forEach((remote) => {
+      const existing = state.channels.find(
+        (c) => c.channelId === remote.channelId || c.name.toLowerCase() === remote.name.toLowerCase()
+      );
+      if (existing) {
+        existing.channelId = remote.channelId;
+      } else {
+        state.channels.push({
+          handle: remote.channelId,
+          channelId: remote.channelId,
+          name: remote.name,
+          category: 'learning',
+          topic: 'Allgemein & Wissen',
+          qualityBase: 80,
+          description: remote.description.slice(0, 120)
+        });
+        added += 1;
+      }
+    });
+
+    saveState();
+    renderChannelManager();
+    renderFeedChannelFilter();
+    els.syncStatusText.textContent = `Verbunden! ${fetched.length} Abos synchronisiert (${added} neu hinzugefügt). Klicke auf „Live-Uploads (UU-Trick) abrufen“.`;
+  } catch (err) {
+    els.syncStatusText.textContent = err.message;
+  }
+}
+
+async function fetchLiveUploadsViaUuTrick() {
+  const channelsWithId = state.channels.filter((c) => c.channelId && c.channelId.startsWith('UC') && c.category !== 'muted');
+  if (channelsWithId.length === 0) {
+    els.syncStatusText.textContent = 'Keine Kanäle mit UC-Channel-ID gefunden. Bitte zuerst Abos über Google anmelden & laden.';
+    return;
+  }
+
+  els.syncStatusText.textContent = `Lade Uploads von ${channelsWithId.length} Kanälen via UU-Playlist-Trick (1 Quota-Unit/Kanal)…`;
+  try {
+    const rawItems = [];
+    for (const ch of channelsWithId.slice(0, 20)) {
+      const uuPlaylistId = `UU${ch.channelId.slice(2)}`;
+      try {
+        const data = await ytApiFetch(
+          `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encodeURIComponent(
+            uuPlaylistId
+          )}&maxResults=3`
+        );
+        (data.items || []).forEach((it) => {
+          const vidId = it.contentDetails?.videoId || it.snippet?.resourceId?.videoId;
+          if (!vidId) return;
+          rawItems.push({
+            id: vidId,
+            channelHandle: ch.handle,
+            channelName: ch.name,
+            category: ch.category,
+            topic: ch.topic,
+            publishedAt: it.snippet?.publishedAt || ''
+          });
+        });
+      } catch {
+        // Einzelne leere Upload-Playlists überspringen
+      }
+    }
+
+    if (rawItems.length === 0) {
+      els.syncStatusText.textContent = 'Keine neuen Uploads gefunden.';
+      return;
+    }
+
+    // Video-Details (Länge & Beschreibung für Kapitel) in einem Batch abfragen (1 Unit für bis zu 50 Videos)
+    const idsChunk = rawItems.slice(0, 50).map((v) => v.id).join(',');
+    const details = await ytApiFetch(
+      `https://www.googleapis.com/youtube/v3/videos?part=contentDetails,snippet&id=${encodeURIComponent(idsChunk)}`
+    );
+
+    const detailMap = {};
+    (details.items || []).forEach((d) => {
+      detailMap[d.id] = d;
+    });
+
+    let importedCount = 0;
+    rawItems.forEach((base, idx) => {
+      const d = detailMap[base.id];
+      if (!d) return;
+      const durationSec = parseIsoDuration(d.contentDetails?.duration || '');
+      if (durationSec > 0 && durationSec < 60) return; // Shorts herausfiltern
+
+      const rawTitle = d.snippet?.title || '';
+      const chapters = extractChaptersFromDescription(d.snippet?.description || '');
+      const videoObj = {
+        id: base.id,
+        originalTitle: rawTitle,
+        calmTitle: calmTitleTransform(rawTitle),
+        channelHandle: base.channelHandle,
+        channelName: base.channelName,
+        durationSec,
+        durationText: formatMMSS(durationSec),
+        publishedText: base.publishedAt ? new Date(base.publishedAt).toLocaleDateString('de-DE') : 'Aktuell',
+        publishedOrder: -100 + idx,
+        category: base.category,
+        topic: base.topic,
+        qualityScore: 85,
+        whyRecommended:
+          chapters.length >= 2
+            ? 'Live über deinen Account geladen — enthält strukturierte Kapitel.'
+            : 'Aktueller Upload aus deinem synchronisierten Abo-Feed.',
+        chapters
+      };
+
+      const existingIdx = state.videos.findIndex((v) => v.id === videoObj.id);
+      if (existingIdx >= 0) {
+        state.videos[existingIdx] = { ...state.videos[existingIdx], ...videoObj };
+      } else {
+        state.videos.unshift(videoObj);
+        importedCount += 1;
+      }
+    });
+
+    saveState();
+    renderVideoViews();
+    els.syncStatusText.textContent = `Fertig! ${importedCount} neue Live-Videos ohne Shorts importiert.`;
+  } catch (err) {
+    els.syncStatusText.textContent = err.message;
+  }
+}
+
+async function subscribeChannelViaApiIfPossible(handleOrId) {
+  if (!oauthAccessToken) return false;
+  if (!handleOrId.startsWith('UC')) return false;
+  try {
+    const res = await fetch('https://www.googleapis.com/youtube/v3/subscriptions?part=snippet', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${oauthAccessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        snippet: {
+          resourceId: {
+            kind: 'youtube#channel',
+            channelId: handleOrId
+          }
+        }
+      })
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// --- OBSIDIAN INTEGRATION (URI + FILE SYSTEM ACCESS API + MARKDOWN) ---
+function sanitizeFilename(name = 'FocusTube-Notiz') {
+  return String(name)
+    .replace(/[\\/:*?"<>|#^\[\]]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80) || 'FocusTube-Notiz';
+}
+
+async function idbPutObsidianDir(handle) {
+  if (typeof indexedDB === 'undefined') return;
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open('focustube_handles_v1', 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains('handles')) {
+          req.result.createObjectStore('handles');
+        }
+      };
+      req.onsuccess = () => {
+        const tx = req.result.transaction('handles', 'readwrite');
+        tx.objectStore('handles').put(handle, 'obsidian_dir');
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      };
+      req.onerror = () => resolve(false);
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+async function idbGetObsidianDir() {
+  if (typeof indexedDB === 'undefined') return null;
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open('focustube_handles_v1', 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains('handles')) {
+          req.result.createObjectStore('handles');
+        }
+      };
+      req.onsuccess = () => {
+        const tx = req.result.transaction('handles', 'readonly');
+        const getReq = tx.objectStore('handles').get('obsidian_dir');
+        getReq.onsuccess = () => resolve(getReq.result || null);
+        getReq.onerror = () => resolve(null);
+      };
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+function buildVideoObsidianMarkdown(video) {
+  const title = getDisplayTitle(video);
+  const notes = state.notesByVideo[video.id] || [];
+  const aiSummary = state.aiSummaries[video.id]?.markdown || '';
+  const chapters = video.chapters || [];
+  const topicTag = String(video.topic || 'wissen')
+    .toLowerCase()
+    .replace(/[^a-z0-9äöüß]+/gi, '-')
+    .replace(/^-|-$/g, '');
+
+  const lines = [
+    '---',
+    `title: "${title.replace(/"/g, '\\"')}"`,
+    `channel: "${String(video.channelName || '').replace(/"/g, '\\"')}"`,
+    `topic: "${String(video.topic || '').replace(/"/g, '\\"')}"`,
+    `duration: "${video.durationText || formatMMSS(video.durationSec)}"`,
+    `url: "https://www.youtube.com/watch?v=${video.id}"`,
+    `date: "${getDateKey()}"`,
+    'tags:',
+    '  - focustube',
+    '  - youtube-lernen',
+    topicTag ? `  - ${topicTag}` : null,
+    '---',
+    '',
+    `# ${title}`,
+    '',
+    `> **Kanal:** ${video.channelName} · **Thema:** ${video.topic} · **Länge:** ${video.durationText || formatMMSS(video.durationSec)}`,
+    `> **Link:** [Auf YouTube öffnen](https://www.youtube.com/watch?v=${video.id})`,
+    ''
+  ].filter((l) => l !== null);
+
+  if (aiSummary) {
+    lines.push('## 🧠 KI-Kernaussagen & Active Recall', '', aiSummary, '');
+  }
+
+  lines.push('## 📝 Zeitstempel-Notizen', '');
+  if (notes.length === 0) {
+    lines.push('- *(Noch keine manuellen Zeitstempel-Notizen erfasst)*', '');
+  } else {
+    notes.forEach((n) => {
+      lines.push(`- [${formatMMSS(n.timeSec)}](https://youtu.be/${video.id}?t=${n.timeSec}) ${n.text}`);
+    });
+    lines.push('');
+  }
+
+  if (chapters.length > 0) {
+    lines.push('## 📑 Kapitel', '');
+    chapters.forEach((ch) => {
+      lines.push(`- [${formatMMSS(ch.timeSec)}](https://youtu.be/${video.id}?t=${ch.timeSec}) ${ch.label}`);
+    });
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+function buildAllNotesObsidianMarkdown() {
+  const lines = [
+    '---',
+    `title: "FocusTube Lern-Notizen (${getDateKey()})"`,
+    `date: "${getDateKey()}"`,
+    'tags:',
+    '  - focustube',
+    '  - lern-logbuch',
+    '---',
+    '',
+    '# FocusTube Lern-Notizen (@henningp.8303)',
+    ''
+  ];
+
+  const allIds = Array.from(
+    new Set([...Object.keys(state.notesByVideo), ...Object.keys(state.aiSummaries)])
+  );
+  allIds.forEach((vidId) => {
+    const video = findVideoById(vidId);
+    const notes = state.notesByVideo[vidId] || [];
+    const ai = state.aiSummaries[vidId]?.markdown || '';
+    lines.push(`## ${video ? getDisplayTitle(video) : vidId}`);
+    if (video) {
+      lines.push(`Kanal: ${video.channelName} · [Video](https://www.youtube.com/watch?v=${vidId})`);
+    }
+    lines.push('');
+    if (ai) {
+      lines.push('### KI-Zusammenfassung', ai, '');
+    }
+    if (notes.length > 0) {
+      lines.push('### Notizen');
+      notes.forEach((n) => lines.push(`- [${formatMMSS(n.timeSec)}](https://youtu.be/${vidId}?t=${n.timeSec}) ${n.text}`));
+      lines.push('');
+    }
+  });
+  return lines.join('\n');
+}
+
+function openInObsidianUri(baseFilename, markdownContent) {
+  const folder = (state.obsidianConfig.folder || 'FocusTube').replace(/^\/+|\/+$/g, '');
+  const filePath = folder ? `${folder}/${baseFilename}` : baseFilename;
+  const params = new URLSearchParams();
+  if (state.obsidianConfig.vaultName) {
+    params.set('vault', state.obsidianConfig.vaultName);
+  }
+  params.set('file', filePath);
+  params.set('content', markdownContent);
+
+  const uri = `obsidian://new?${params.toString()}`;
+  window.location.href = uri;
+}
+
+function downloadMarkdownFile(filename, markdownContent) {
+  const blob = new Blob([markdownContent], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename.endsWith('.md') ? filename : `${filename}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function saveMarkdownToVaultOrDownload(baseFilename, markdownContent) {
+  const safeFile = `${sanitizeFilename(baseFilename)}.md`;
+  if (obsidianDirHandle) {
+    try {
+      const perm = await obsidianDirHandle.requestPermission({ mode: 'readwrite' });
+      if (perm === 'granted') {
+        const fileHandle = await obsidianDirHandle.getFileHandle(safeFile, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(markdownContent);
+        await writable.close();
+        return { method: 'vault', filename: safeFile };
+      }
+    } catch {
+      // Fallback zu Download
+    }
+  }
+  downloadMarkdownFile(safeFile, markdownContent);
+  return { method: 'download', filename: safeFile };
+}
+
+// --- GEMINI REST API HELPER (DIRECT CORS FROM BROWSER) ---
+async function callGeminiApi(promptText, { expectJson = false, temperature = 0.3 } = {}) {
+  const apiKey = (state.apiConfig.geminiKey || '').trim();
+  if (!apiKey) {
+    throw new Error('Kein Gemini API Key hinterlegt. Bitte im Modal „🔗 Sync, Gemini & Obsidian“ eintragen.');
+  }
+  const model = state.apiConfig.geminiModel || 'gemini-2.5-flash';
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: promptText }] }],
+    generationConfig: {
+      temperature,
+      ...(expectJson ? { responseMimeType: 'application/json' } : {})
+    }
+  };
+
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Gemini API Fehler (${res.status}): ${errText.slice(0, 180)}`);
+  }
+
+  const data = await res.json();
+  const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('\n').trim();
+  if (!text) {
+    throw new Error('Gemini hat keine Antwort geliefert.');
+  }
+
+  if (!expectJson) return text;
+
+  const cleaned = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+  return JSON.parse(cleaned);
+}
+
+function renderAiSummaryBox(videoId) {
+  if (!els.aiSummaryOutput) return;
+  const saved = state.aiSummaries[videoId];
+  if (!saved || !saved.markdown) {
+    els.aiSummaryOutput.classList.add('hidden');
+    els.aiSummaryOutput.textContent = '';
+    return;
+  }
+  els.aiSummaryOutput.textContent = saved.markdown;
+  els.aiSummaryOutput.classList.remove('hidden');
+}
+
+async function generateAiSummaryForActiveVideo() {
+  if (!activeVideoId) return;
+  const video = findVideoById(activeVideoId);
+  if (!video) return;
+
+  const extraInput = (els.aiTranscriptInput?.value || '').trim();
+  const notes = (state.notesByVideo[video.id] || []).map((n) => `[${formatMMSS(n.timeSec)}] ${n.text}`).join('\n');
+  const chapters = (video.chapters || []).map((c) => `[${formatMMSS(c.timeSec)}] ${c.label}`).join('\n');
+
+  els.btnAiSummarize.disabled = true;
+  els.btnAiSummarize.textContent = '⏳ Gemini analysiert…';
+
+  try {
+    const prompt = [
+      'Du bist ein präziser Lern-Assistent. Erstelle auf Deutsch eine extrem informationsdichte, sachliche Lernnotiz für Obsidian (Markdown, kein Smalltalk).',
+      `Videotitel: ${video.originalTitle || video.calmTitle}`,
+      `Kanal: ${video.channelName}`,
+      `Thema: ${video.topic}`,
+      `Länge: ${video.durationText || formatMMSS(video.durationSec)}`,
+      video.description ? `Beschreibung:\n${video.description.slice(0, 2000)}` : '',
+      chapters ? `Kapitel:\n${chapters}` : '',
+      notes ? `Meine Zeitstempel-Notizen:\n${notes}` : '',
+      extraInput ? `Vom Nutzer eingefügtes Transkript / Stichpunkte:\n${extraInput.slice(0, 14000)}` : '',
+      '',
+      'Formatiere exakt mit diesen drei Abschnitten:',
+      '### Kernaussagen (max. 5 dichte Bulletpoints)',
+      '### Mentale Modelle / Konkrete Anwendung',
+      '### Active-Recall-Check (2 Verständnisfragen ohne Lösung, um selbst nachzudenken)'
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const md = await callGeminiApi(prompt, { expectJson: false, temperature: 0.25 });
+    state.aiSummaries[video.id] = {
+      markdown: md,
+      updatedAt: new Date().toISOString()
+    };
+    saveState();
+    renderAiSummaryBox(video.id);
+  } catch (err) {
+    els.aiSummaryOutput.textContent = err.message;
+    els.aiSummaryOutput.classList.remove('hidden');
+  } finally {
+    els.btnAiSummarize.disabled = false;
+    els.btnAiSummarize.textContent = '✨ Kernaussagen für Obsidian generieren';
+  }
+}
+
+// --- WISSENS-ENTDECKER (GEMINI + YOUTUBE DISCOVERY AUSSERHALB DER ABOS) ---
+function renderDiscoverGoalPills() {
+  if (!els.discoverGoalPills) return;
+  els.discoverGoalPills.innerHTML = LEARNING_GOALS.map(
+    (g) => `<button type="button" class="goal-chip" data-discover-goal="${escapeHtml(g.label)}">${escapeHtml(g.label)}</button>`
+  ).join('');
+
+  els.discoverGoalPills.querySelectorAll('[data-discover-goal]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      els.discoverQueryInput.value = btn.dataset.discoverGoal;
+      runKnowledgeDiscovery();
+    });
+  });
+}
+
+function setDiscoverStatus(html, isVisible = true) {
+  if (!els.discoverStatusBox) return;
+  els.discoverStatusBox.innerHTML = html;
+  els.discoverStatusBox.classList.toggle('hidden', !isVisible);
+}
+
+function renderDiscoveryResults() {
+  if (!els.discoverResultsGrid) return;
+  const list = state.discoveryResults || [];
+  if (els.statDiscoverCount) els.statDiscoverCount.textContent = String(list.length);
+  if (els.statDiscoverBlocked) els.statDiscoverBlocked.textContent = String((state.blockedDiscoveryChannels || []).length);
+
+  if (list.length === 0) {
+    els.discoverResultsGrid.innerHTML = `
+      <div class="panel-card">
+        <h3>Noch keine Discovery-Suche gestartet</h3>
+        <p class="panel-hint">
+          Gib oben ein Thema ein oder klicke auf ein Lernziel. Gemini sucht &amp; bewertet maximal 5 kompakte, informationsdichte Videos außerhalb deiner Abos — ohne Endlos-Scrollen.
+        </p>
+      </div>
+    `;
+    return;
+  }
+
+  els.discoverResultsGrid.innerHTML = list
+    .map((v) => {
+      const title = getDisplayTitle(v);
+      const thumbUrl = v.thumbnail || `https://i.ytimg.com/vi/${encodeURIComponent(v.id)}/hqdefault.jpg`;
+      const isAlreadySub = state.channels.some(
+        (c) =>
+          (v.channelId && c.channelId === v.channelId) ||
+          c.name.toLowerCase() === (v.channelName || '').toLowerCase()
+      );
+
+      return `
+        <article class="video-card" data-discover-id="${escapeHtml(v.id)}">
+          <div class="video-thumb" data-play-video="${escapeHtml(v.id)}">
+            <img src="${thumbUrl}" alt="${escapeHtml(title)}" loading="lazy" />
+            <span class="score-badge">Dichte ${v.aiDensityScore ?? v.focusScore ?? 85}</span>
+            <span class="duration-badge">${escapeHtml(v.durationText || formatMMSS(v.durationSec))}</span>
+          </div>
+          <div class="video-body">
+            <div class="video-meta-top">
+              <span class="density-tag">${escapeHtml(v.densityTag || 'Kompakt & dicht')}</span>
+              <span>${escapeHtml(v.topic || 'Wissen')}</span>
+            </div>
+            <h3 class="video-title" data-play-video="${escapeHtml(v.id)}">${escapeHtml(title)}</h3>
+            <p class="video-reason">${escapeHtml(v.whyRecommended || '')}</p>
+            <div class="video-footer">
+              <span><strong>${escapeHtml(v.channelName)}</strong> · ${escapeHtml(v.publishedText || '')}</span>
+            </div>
+            <div class="discover-card-actions">
+              <button class="btn btn-primary" data-play-video="${escapeHtml(v.id)}">▶ Im Schutzschild</button>
+              <button class="btn btn-secondary" data-sub-discover="${escapeHtml(v.id)}" ${isAlreadySub ? 'disabled' : ''}>
+                ${isAlreadySub ? '✓ In deinen Abos' : '+ Lern-Kanal'}
+              </button>
+              <button class="btn btn-ghost" data-block-discover="${escapeHtml(v.channelHandle)}" title="Kanal dauerhaft aus Entdeckungen ausblenden">
+                ✕
+              </button>
+            </div>
+          </div>
+        </article>
+      `;
+    })
+    .join('');
+
+  attachVideoCardHandlers(els.discoverResultsGrid);
+
+  els.discoverResultsGrid.querySelectorAll('[data-sub-discover]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const v = (state.discoveryResults || []).find((item) => item.id === btn.dataset.subDiscover);
+      if (!v) return;
+      const handle = v.channelId || v.channelHandle;
+      const exists = state.channels.some((c) => c.channelId === v.channelId || c.handle === handle);
+      if (!exists) {
+        state.channels.unshift({
+          handle,
+          channelId: v.channelId,
+          name: v.channelName,
+          category: 'learning',
+          topic: v.topic || 'Wissen & Fokus',
+          qualityBase: Math.min(95, Math.max(78, v.aiDensityScore || 84)),
+          description: 'Über Wissens-Entdecker als Lern-Kanal hinzugefügt'
+        });
+        if (v.channelId) {
+          await subscribeChannelViaApiIfPossible(v.channelId);
+        }
+      }
+      if (!state.videos.some((item) => item.id === v.id)) {
+        state.videos.unshift({ ...v, isDiscovery: false, category: 'learning' });
+      }
+      saveState();
+      renderChannelManager();
+      renderFeedChannelFilter();
+      renderVideoViews();
+      renderDiscoveryResults();
+    });
+  });
+
+  els.discoverResultsGrid.querySelectorAll('[data-block-discover]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const chKey = btn.dataset.blockDiscover;
+      if (chKey && !state.blockedDiscoveryChannels.includes(chKey)) {
+        state.blockedDiscoveryChannels.push(chKey);
+      }
+      state.discoveryResults = (state.discoveryResults || []).filter((v) => v.channelHandle !== chKey);
+      saveState();
+      renderDiscoveryResults();
+    });
+  });
+}
+
+async function generateDiscoveryQueriesWithGemini(topic, lengthPref, langPref) {
+  const lengthHint =
+    lengthPref === 'compact'
+      ? 'kompakte, hochdichte Erklärvideos (ca. 6–20 Min., keine stundenlangen Vorträge/Podcasts)'
+      : lengthPref === 'medium'
+      ? 'strukturierte Deep-Dives (ca. 15–35 Min.)'
+      : 'hochwertige Fachvideos';
+  const langHint =
+    langPref === 'de' ? 'nur deutsche Suchbegriffe' : langPref === 'en' ? 'nur englische Suchbegriffe' : '1 deutscher und 1–2 englische Suchbegriffe';
+
+  const prompt = [
+    `Erstelle 2 bis 3 präzise YouTube-Suchanfragen zum Lern-Thema: "${topic}".`,
+    `Ziel: ${lengthHint} mit maximaler Informationsdichte und null Clickbait/Hype/Reaction-Content.`,
+    `Sprache: ${langHint}.`,
+    'Vermeide Begriffe wie "schnell reich", "krass", "reagiert", "top 10", "podcast clips". Nutze Fachbegriffe oder Wörter wie "explained", "mechanisms", "analyse", "case study", "intuition".',
+    'Antworte ausschließlich als JSON-Objekt: {"queries": ["...", "..."], "focusAngle": "kurzer Satz was geprüft wird"}'
+  ].join('\n');
+
+  const parsed = await callGeminiApi(prompt, { expectJson: true, temperature: 0.3 });
+  const queries = Array.isArray(parsed?.queries) ? parsed.queries.filter(Boolean).slice(0, 3) : [];
+  return {
+    queries: queries.length > 0 ? queries : [topic],
+    focusAngle: parsed?.focusAngle || ''
+  };
+}
+
+async function scoreDiscoveryCandidatesWithGemini(topic, candidates, lengthPref) {
+  const compactList = candidates.map((c) => ({
+    id: c.id,
+    title: c.originalTitle,
+    channel: c.channelName,
+    minutes: Math.round(c.durationSec / 60),
+    chaptersCount: c.chapters.length,
+    likeRatioPercent: c.likeRatioPercent,
+    descExcerpt: (c.description || '').slice(0, 360)
+  }));
+
+  const lengthPreferenceText =
+    lengthPref === 'compact'
+      ? 'Der Nutzer bevorzugt ausdrücklich kompakte Videos mit hoher Informationsdichte (Idealbereich: 6–22 Min.) gegenüber unnötig langen 60–90-Minuten-Vorträgen.'
+      : 'Der Nutzer schätzt strukturierte Erklärungen mit hoher Informationsdichte pro Minute.';
+
+  const prompt = [
+    `Bewerte diese realen YouTube-Videos für das Lernziel "${topic}".`,
+    lengthPreferenceText,
+    'Sortiere Clickbait, oberflächliches Infotainment, Verkaufs-Funnels und unnötig gestreckte Laber-Videos konsequent aus.',
+    'Antworte ausschließlich als JSON-Array mit einem Objekt pro Video-ID:',
+    '[{"id": "...", "densityScore": 0-99, "isClickbait": true|false, "densityTag": "z.B. Hohe Dichte · 14 Min.", "reason": "1 ruhiger deutscher Satz, welches konkrete Wissen vermittelt wird"}]',
+    '',
+    JSON.stringify(compactList)
+  ].join('\n');
+
+  const scored = await callGeminiApi(prompt, { expectJson: true, temperature: 0.2 });
+  return Array.isArray(scored) ? scored : [];
+}
+
+async function runKnowledgeDiscovery() {
+  const topic = (els.discoverQueryInput?.value || '').trim();
+  if (!topic) {
+    setDiscoverStatus('Bitte gib zuerst ein Thema oder eine Lernfrage ein (z. B. „Yield Curve“, „Faszien“ oder „Spieltheorie“).');
+    return;
+  }
+
+  const lengthPref = els.discoverLengthPref?.value || 'compact';
+  const langPref = els.discoverLangPref?.value || 'all';
+  const hasYtAuth = Boolean(oauthAccessToken || (state.apiConfig.apiKey || '').trim());
+  const hasGemini = Boolean((state.apiConfig.geminiKey || '').trim());
+
+  if (!hasYtAuth) {
+    if (hasGemini) {
+      els.btnRunDiscovery.disabled = true;
+      els.btnRunDiscovery.textContent = '⏳ Gemini plant Lernpfad…';
+      try {
+        const plan = await callGeminiApi(
+          `Der Nutzer möchte zum Thema "${topic}" hochdichte, kompakte Wissensvideos (6–22 Min., kein Clickbait) entdecken, hat aber in FocusTube noch keinen YouTube Data API v3 Key hinterlegt. Gib 4 konkrete, fachlich präzise Suchbegriffe + eine kurze Checkliste (woran man beim Thema Informationsdichte erkennt) als JSON: {"queries": ["..."], "checklist": "..."}`,
+          { expectJson: true }
+        );
+        const pills = (plan.queries || [])
+          .map(
+            (q) =>
+              `<a class="discover-query-pill" href="https://www.youtube.com/results?search_query=${encodeURIComponent(q)}" target="_blank" rel="noopener">🔎 ${escapeHtml(q)} ↗</a>`
+          )
+          .join('');
+        setDiscoverStatus(
+          `<strong>Gemini Suchstrategie bereit — YouTube API Key fehlt noch für die direkte Video-Liste:</strong><br/>` +
+            `${escapeHtml(plan.checklist || '')}<div class="discover-query-pills">${pills}</div>` +
+            `<p style="margin:8px 0 0;">Tipp: Hinterlege unter <strong>🔗 Sync, Gemini &amp; Obsidian</strong> noch deinen kostenlosen YouTube Data API v3 Key (im selben Google Cloud Projekt wie Gemini), dann lädt FocusTube die Top 5 Videos direkt hier in den Schutzschild-Player.</p>`
+        );
+      } catch (err) {
+        setDiscoverStatus(`<strong>Fehler:</strong> ${escapeHtml(err.message)}`);
+      } finally {
+        els.btnRunDiscovery.disabled = false;
+        els.btnRunDiscovery.textContent = '✨ Mit Gemini entdecken';
+      }
+      return;
+    }
+
+    setDiscoverStatus(
+      '<strong>API-Keys benötigt:</strong> Um neue Videos außerhalb deiner Abos live abzurufen und per Gemini zu filtern, trage im Modal <strong>🔗 Sync, Gemini &amp; Obsidian</strong> deinen kostenlosen <strong>Gemini API Key</strong> und deinen <strong>YouTube Data API v3 Key</strong> (oder Google Login) ein.'
+    );
+    return;
+  }
+
+  const cacheKey = `${topic.toLowerCase()}|${lengthPref}|${langPref}|${hasGemini ? 'ai' : 'noai'}`;
+  const cached = state.discoveryCache?.[cacheKey];
+  if (cached && Date.now() - cached.ts < 12 * 60 * 60 * 1000) {
+    state.discoveryResults = cached.results;
+    saveState();
+    renderDiscoveryResults();
+    setDiscoverStatus(
+      `<strong>Aus dem 12h-Cache geladen (0 Quota-Units verbraucht):</strong> Top ${cached.results.length} Videos für „${escapeHtml(topic)}“.` +
+        `<div class="discover-query-pills">${(cached.queries || []).map((q) => `<span class="discover-query-pill">${escapeHtml(q)}</span>`).join('')}</div>`
+    );
+    return;
+  }
+
+  els.btnRunDiscovery.disabled = true;
+  els.btnRunDiscovery.textContent = '⏳ Gemini & YouTube suchen…';
+
+  try {
+    let queries = [topic];
+    let focusAngle = '';
+
+    if (hasGemini) {
+      setDiscoverStatus('⏳ <strong>Schritt 1/3:</strong> Gemini formuliert Anti-Clickbait-Fachsuchanfragen…');
+      const expanded = await generateDiscoveryQueriesWithGemini(topic, lengthPref, langPref);
+      queries = expanded.queries;
+      focusAngle = expanded.focusAngle;
+    }
+
+    setDiscoverStatus(
+      `⏳ <strong>Schritt 2/3:</strong> Suche reale YouTube-Videos ohne Shorts…<div class="discover-query-pills">${queries
+        .map((q) => `<span class="discover-query-pill">${escapeHtml(q)}</span>`)
+        .join('')}</div>`
+    );
+
+    const ytDurationParam = lengthPref === 'compact' ? 'medium' : 'any';
+    const langParam = langPref === 'de' || langPref === 'en' ? `&relevanceLanguage=${langPref}` : '';
+    const subChannelIds = new Set(state.channels.map((c) => c.channelId).filter(Boolean));
+    const subChannelNames = new Set(state.channels.map((c) => (c.name || '').toLowerCase()));
+    const blockedSet = new Set(state.blockedDiscoveryChannels || []);
+
+    const foundMap = new Map();
+    for (const q of queries.slice(0, 2)) {
+      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoDuration=${ytDurationParam}${langParam}&maxResults=12&q=${encodeURIComponent(
+        q
+      )}`;
+      const searchData = await ytApiFetch(searchUrl);
+      (searchData.items || []).forEach((item) => {
+        const vidId = item.id?.videoId;
+        const snip = item.snippet;
+        if (!vidId || !snip) return;
+        const chId = snip.channelId || '';
+        const chTitle = snip.channelTitle || '';
+        if (subChannelIds.has(chId) || subChannelNames.has(chTitle.toLowerCase())) return;
+        if (blockedSet.has(chId) || blockedSet.has(chTitle)) return;
+        if (!foundMap.has(vidId)) {
+          foundMap.set(vidId, {
+            id: vidId,
+            channelId: chId,
+            channelHandle: chId || chTitle,
+            channelName: chTitle
+          });
+        }
+      });
+    }
+
+    const candidateIds = Array.from(foundMap.keys()).slice(0, 20);
+    if (candidateIds.length === 0) {
+      setDiscoverStatus('Keine neuen Kanäle außerhalb deiner Abos zu diesem Begriff gefunden. Versuche einen etwas breiteren Fachbegriff.');
+      state.discoveryResults = [];
+      renderDiscoveryResults();
+      return;
+    }
+
+    const detailsData = await ytApiFetch(
+      `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${encodeURIComponent(candidateIds.join(','))}`
+    );
+
+    let candidates = (detailsData.items || [])
+      .map((d) => {
+        const durationSec = parseIsoDuration(d.contentDetails?.duration || '');
+        const rawTitle = d.snippet?.title || '';
+        const desc = d.snippet?.description || '';
+        const chapters = extractChaptersFromDescription(desc);
+        const views = parseInt(d.statistics?.viewCount || '0', 10);
+        const likes = parseInt(d.statistics?.likeCount || '0', 10);
+        const likeRatioPercent = views > 0 ? Number(((likes / views) * 100).toFixed(2)) : 0;
+
+        return {
+          id: d.id,
+          originalTitle: rawTitle,
+          calmTitle: calmTitleTransform(rawTitle),
+          channelId: d.snippet?.channelId || '',
+          channelHandle: d.snippet?.channelId || d.snippet?.channelTitle || '',
+          channelName: d.snippet?.channelTitle || 'Unbekannt',
+          durationSec,
+          durationText: formatMMSS(durationSec),
+          publishedText: d.snippet?.publishedAt ? new Date(d.snippet.publishedAt).toLocaleDateString('de-DE') : '',
+          category: 'learning',
+          topic,
+          description: desc,
+          chapters,
+          likeRatioPercent,
+          isDiscovery: true
+        };
+      })
+      .filter((v) => {
+        if (v.durationSec < 240) return false; // < 4 Min. herausfiltern (Shorts & Snippets)
+        if (lengthPref === 'compact' && v.durationSec > 1680) return false; // > 28 Min. herausfiltern bei Kompakt-Präferenz
+        if (lengthPref === 'medium' && v.durationSec > 2700) return false;
+        return true;
+      });
+
+    if (candidates.length === 0) {
+      setDiscoverStatus('Treffer waren entweder unter 4 Minuten oder deutlich länger als dein gewähltes Dichte-Zeitfenster. Probiere „Strukturiert (15–35 Min.)“.');
+      return;
+    }
+
+    if (hasGemini) {
+      setDiscoverStatus('⏳ <strong>Schritt 3/3:</strong> Gemini prüft Informationsdichte &amp; filtert Clickbait aus…');
+      const aiScores = await scoreDiscoveryCandidatesWithGemini(topic, candidates.slice(0, 12), lengthPref);
+      const scoreMap = {};
+      aiScores.forEach((s) => {
+        if (s && s.id) scoreMap[s.id] = s;
+      });
+
+      candidates = candidates
+        .map((c) => {
+          const ai = scoreMap[c.id];
+          if (ai?.isClickbait) return null;
+          const densityScore = typeof ai?.densityScore === 'number' ? ai.densityScore : computeFocusScore(c);
+          return {
+            ...c,
+            aiDensityScore: densityScore,
+            focusScore: densityScore,
+            densityTag: ai?.densityTag || `Dichte ${densityScore}`,
+            whyRecommended: ai?.reason || 'Durch Gemini-Informationsdichte-Filter ausgewählt.'
+          };
+        })
+        .filter(Boolean);
+    } else {
+      candidates = candidates.map((c) => {
+        const s = computeFocusScore(c);
+        return {
+          ...c,
+          aiDensityScore: s,
+          focusScore: s,
+          densityTag: c.chapters.length >= 2 ? `${c.chapters.length} Kapitel · ${Math.round(c.durationSec / 60)} Min.` : `${Math.round(c.durationSec / 60)} Min.`,
+          whyRecommended: `Like-Quote ${c.likeRatioPercent}% · ${c.chapters.length} Kapitel · Anti-Clickbait geprüft.`
+        };
+      });
+    }
+
+    candidates.sort((a, b) => (b.aiDensityScore || 0) - (a.aiDensityScore || 0));
+    const top5 = candidates.slice(0, 5);
+
+    state.discoveryResults = top5;
+    state.discoveryCache[cacheKey] = { ts: Date.now(), queries, results: top5 };
+    saveState();
+    renderDiscoveryResults();
+
+    setDiscoverStatus(
+      `<strong>${top5.length} hochdichte Videos außerhalb deiner Abos kuratiert</strong>` +
+        (focusAngle ? ` — ${escapeHtml(focusAngle)}` : '') +
+        `<div class="discover-query-pills">${queries.map((q) => `<span class="discover-query-pill">${escapeHtml(q)}</span>`).join('')}</div>`
+    );
+  } catch (err) {
+    setDiscoverStatus(`<strong>Discovery-Fehler:</strong> ${escapeHtml(err.message)}`);
+  } finally {
+    els.btnRunDiscovery.disabled = false;
+    els.btnRunDiscovery.textContent = '✨ Mit Gemini entdecken';
+  }
+}
+
+function extractYoutubeIdFromUrl(raw = '') {
+  const input = raw.trim();
+  if (/^[A-Za-z0-9_-]{11}$/.test(input)) return input;
+  try {
+    const u = new URL(input);
+    if (u.hostname.includes('youtu.be')) {
+      const id = u.pathname.replace('/', '').slice(0, 11);
+      return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : null;
+    }
+    const v = u.searchParams.get('v');
+    if (v && /^[A-Za-z0-9_-]{11}$/.test(v)) return v;
+    const parts = u.pathname.split('/').filter(Boolean);
+    if ((parts[0] === 'embed' || parts[0] === 'shorts' || parts[0] === 'live') && /^[A-Za-z0-9_-]{11}$/.test(parts[1] || '')) {
+      return parts[1];
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function openDirectYoutubeUrl() {
+  const raw = (els.discoverDirectUrl?.value || '').trim();
+  const vidId = extractYoutubeIdFromUrl(raw);
+  if (!vidId) {
+    setDiscoverStatus('Bitte einen gültigen YouTube-Link (youtube.com/watch?v=… oder youtu.be/…) einfügen.');
+    return;
+  }
+
+  let video = findVideoById(vidId);
+  if (!video) {
+    video = {
+      id: vidId,
+      originalTitle: `Direktes Lernvideo (${vidId})`,
+      calmTitle: `Direktes Lernvideo (${vidId})`,
+      channelHandle: '@external',
+      channelName: 'Externer Link',
+      durationSec: 0,
+      durationText: '--:--',
+      publishedText: 'Direktlink',
+      category: 'learning',
+      topic: 'Direktimport',
+      chapters: [],
+      isDiscovery: true
+    };
+
+    if (oauthAccessToken || (state.apiConfig.apiKey || '').trim()) {
+      try {
+        const data = await ytApiFetch(
+          `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=${encodeURIComponent(vidId)}`
+        );
+        const d = data.items?.[0];
+        if (d) {
+          const durationSec = parseIsoDuration(d.contentDetails?.duration || '');
+          const rawTitle = d.snippet?.title || video.originalTitle;
+          video = {
+            ...video,
+            originalTitle: rawTitle,
+            calmTitle: calmTitleTransform(rawTitle),
+            channelId: d.snippet?.channelId || '',
+            channelHandle: d.snippet?.channelId || d.snippet?.channelTitle || '@external',
+            channelName: d.snippet?.channelTitle || 'Externer Kanal',
+            durationSec,
+            durationText: formatMMSS(durationSec),
+            description: d.snippet?.description || '',
+            chapters: extractChaptersFromDescription(d.snippet?.description || '')
+          };
+        }
+      } catch {
+        // Fallback: direkt im Schutzschild öffnen
+      }
+    }
+
+    state.discoveryResults = [video, ...(state.discoveryResults || []).filter((v) => v.id !== vidId)].slice(0, 5);
+    saveState();
+    renderDiscoveryResults();
+  }
+
+  els.discoverDirectUrl.value = '';
+  openVideoInWorkspace(vidId);
+}
+
+// --- EVENT LISTENER & INITIALISIERUNG ---
+function bindEvents() {
+  els.btnModeLearning.addEventListener('click', () => setMode('learning'));
+  els.btnModeEntertainment.addEventListener('click', () => setMode('entertainment'));
+
+  els.navTabs.forEach((tab) => {
+    tab.addEventListener('click', () => setTab(tab.dataset.tab));
+  });
+
+  // Manueller Live-Timer Start/Pause
+  const toggleManualTimer = () => {
+    if (isEntertainmentLocked() && !manualTimerActive) {
+      alert('Unterhaltungs-Budget für heute bereits verbraucht.');
+      return;
+    }
+    manualTimerActive = !manualTimerActive;
+    updateTimerUI();
+  };
+  els.liveTimerPill.addEventListener('click', toggleManualTimer);
+  els.btnDashTimerToggle.addEventListener('click', toggleManualTimer);
+
+  // Anti-Dopamin Quick-Toggles
+  els.toggleCalmTitles.checked = state.calmTitles;
+  els.toggleCalmThumbs.checked = state.calmThumbnails;
+  els.toggleFloodBrake.checked = state.floodBrake;
+  els.toggleHideWatched.checked = state.hideWatched;
+  if (els.algoDensityMode) els.algoDensityMode.value = state.densityPreference || 'dense';
+  els.body.classList.toggle('calm-thumbnails', state.calmThumbnails);
+
+  els.toggleCalmTitles.addEventListener('change', () => {
+    state.calmTitles = els.toggleCalmTitles.checked;
+    saveState();
+    renderVideoViews();
+    renderDiscoveryResults();
+    if (activeVideoId) {
+      const v = findVideoById(activeVideoId);
+      if (v) els.playerVideoTitle.textContent = getDisplayTitle(v);
+    }
+  });
+
+  els.toggleCalmThumbs.addEventListener('change', () => {
+    state.calmThumbnails = els.toggleCalmThumbs.checked;
+    els.body.classList.toggle('calm-thumbnails', state.calmThumbnails);
+    saveState();
+  });
+
+  els.toggleFloodBrake.addEventListener('change', () => {
+    state.floodBrake = els.toggleFloodBrake.checked;
+    saveState();
+    renderVideoViews();
+  });
+
+  els.toggleHideWatched.addEventListener('change', () => {
+    state.hideWatched = els.toggleHideWatched.checked;
+    saveState();
+    renderVideoViews();
+  });
+
+  // Lernziele, Informationsdichte & Suche
+  els.btnResetGoals.addEventListener('click', () => {
+    state.activeGoals = LEARNING_GOALS.map((g) => g.id);
+    saveState();
+    renderLearningGoals();
+    renderVideoViews();
+  });
+
+  if (els.algoDensityMode) {
+    els.algoDensityMode.addEventListener('change', () => {
+      state.densityPreference = els.algoDensityMode.value;
+      saveState();
+      renderVideoViews();
+    });
+  }
+
+  els.algoSearchInput.addEventListener('input', renderVideoViews);
+  els.algoDurationFilter.addEventListener('change', renderVideoViews);
+  els.feedChannelFilter.addEventListener('change', renderVideoViews);
+
+  // Wissens-Entdecker Events
+  if (els.btnRunDiscovery) {
+    els.btnRunDiscovery.addEventListener('click', runKnowledgeDiscovery);
+  }
+  if (els.discoverQueryInput) {
+    els.discoverQueryInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        runKnowledgeDiscovery();
+      }
+    });
+  }
+  if (els.btnOpenDirectUrl) {
+    els.btnOpenDirectUrl.addEventListener('click', openDirectYoutubeUrl);
+  }
+
+  // Player & Schutzschild Controls
+  els.playerShield.addEventListener('click', togglePlayPause);
+  els.ctrlPlayPause.addEventListener('click', togglePlayPause);
+  els.ctrlBack15.addEventListener('click', () => seekRelative(-15));
+  els.ctrlFwd15.addEventListener('click', () => seekRelative(15));
+
+  els.ctrlScrubber.addEventListener('input', () => {
+    if (!ytPlayer || typeof ytPlayer.seekTo !== 'function') return;
+    const duration = ytPlayer.getDuration() || lastVideoDuration || 0;
+    const target = (parseFloat(els.ctrlScrubber.value) / 100) * duration;
+    endScreenTriggered = false;
+    ytPlayer.seekTo(target, true);
+    els.ctrlCurrentTime.textContent = formatMMSS(target);
+  });
+
+  els.ctrlMute.addEventListener('click', () => {
+    if (!ytPlayer || typeof ytPlayer.isMuted !== 'function') return;
+    if (ytPlayer.isMuted()) {
+      ytPlayer.unMute();
+      els.ctrlMute.textContent = '🔊 Ton';
+    } else {
+      ytPlayer.mute();
+      els.ctrlMute.textContent = '🔇 Stumm';
+    }
+  });
+
+  els.speedButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      playbackRate = parseFloat(btn.dataset.speed || '1');
+      els.speedButtons.forEach((b) => b.classList.toggle('active', b === btn));
+      if (ytPlayer && typeof ytPlayer.setPlaybackRate === 'function') {
+        ytPlayer.setPlaybackRate(playbackRate);
+      }
+    });
+  });
+
+  els.ctrlFullscreen.addEventListener('click', () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    } else if (els.playerStage.requestFullscreen) {
+      els.playerStage.requestFullscreen().catch(() => {});
+    }
+  });
+
+  els.btnClosePlayer.addEventListener('click', closePlayerWorkspace);
+  els.btnToggleWatched.addEventListener('click', () => markVideoWatched(activeVideoId));
+
+  // Overlay Buttons
+  els.btnOverlayResume.addEventListener('click', togglePlayPause);
+  els.btnOverlayBack.addEventListener('click', closePlayerWorkspace);
+  els.btnOverlaySaveNote.addEventListener('click', () => {
+    addNoteForActiveVideo(els.overlayQuickNote.value);
+    els.overlayQuickNote.value = '';
+  });
+
+  // Companion Note Composer + Obsidian + Gemini AI
+  els.btnSaveCompanionNote.addEventListener('click', () => {
+    addNoteForActiveVideo(els.companionNoteInput.value);
+    els.companionNoteInput.value = '';
+  });
+
+  if (els.btnAiSummarize) {
+    els.btnAiSummarize.addEventListener('click', generateAiSummaryForActiveVideo);
+  }
+
+  if (els.btnPlayerObsidian) {
+    els.btnPlayerObsidian.addEventListener('click', () => {
+      const video = findVideoById(activeVideoId);
+      if (!video) return;
+      const md = buildVideoObsidianMarkdown(video);
+      openInObsidianUri(sanitizeFilename(getDisplayTitle(video)), md);
+      els.playerObsidianStatus.textContent = 'Obsidian wird über obsidian://new geöffnet…';
+    });
+  }
+
+  if (els.btnPlayerObsidianFile) {
+    els.btnPlayerObsidianFile.addEventListener('click', async () => {
+      const video = findVideoById(activeVideoId);
+      if (!video) return;
+      const md = buildVideoObsidianMarkdown(video);
+      const res = await saveMarkdownToVaultOrDownload(getDisplayTitle(video), md);
+      els.playerObsidianStatus.textContent =
+        res.method === 'vault'
+          ? `Direkt im verknüpften Vault-Ordner gespeichert: ${res.filename}`
+          : `Markdown-Datei heruntergeladen: ${res.filename}`;
+    });
+  }
+
+  if (els.btnPlayerCopyMd) {
+    els.btnPlayerCopyMd.addEventListener('click', async () => {
+      const video = findVideoById(activeVideoId);
+      if (!video) return;
+      const md = buildVideoObsidianMarkdown(video);
+      try {
+        await navigator.clipboard.writeText(md);
+        els.playerObsidianStatus.textContent = 'Obsidian-Markdown in die Zwischenablage kopiert.';
+      } catch {
+        els.playerObsidianStatus.textContent = 'Zwischenablage nicht verfügbar — nutze „.md / Vault speichern“.';
+      }
+    });
+  }
+
+  // Leertaste steuert Player, wenn kein Textfeld fokussiert ist
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && activeVideoId) {
+      const tag = document.activeElement?.tagName;
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
+        e.preventDefault();
+        togglePlayPause();
+      }
+    }
+  });
+
+  // Budgets speichern
+  els.btnSaveBudgets.addEventListener('click', () => {
+    const lMin = Math.max(5, parseInt(els.inputLearningGoal.value || '45', 10));
+    const eMin = Math.max(0, parseInt(els.inputEntertainmentLimit.value || '20', 10));
+    state.budgets = { learningGoalMin: lMin, entertainmentLimitMin: eMin };
+    saveState();
+    updateTimerUI();
+    renderDashboard();
+    renderVideoViews();
+  });
+
+  // Neuen Kanal hinzufügen / via API abonnieren
+  els.formAddChannel.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = els.newChannelName.value.trim();
+    const rawHandle = els.newChannelHandle.value.trim();
+    const category = els.newChannelCategory.value;
+    const topic = els.newChannelTopic.value.trim() || 'Allgemein & Wissen';
+    if (!name || !rawHandle) return;
+
+    const handle = rawHandle.startsWith('@') || rawHandle.startsWith('UC') ? rawHandle : `@${rawHandle}`;
+    const exists = state.channels.some((c) => c.handle.toLowerCase() === handle.toLowerCase());
+    if (!exists) {
+      state.channels.unshift({
+        handle,
+        channelId: handle.startsWith('UC') ? handle : undefined,
+        name,
+        category,
+        topic,
+        qualityBase: 82,
+        description: 'Manuell hinzugefügter Kanal'
+      });
+      if (handle.startsWith('UC')) {
+        await subscribeChannelViaApiIfPossible(handle);
+      }
+      saveState();
+    }
+
+    els.newChannelName.value = '';
+    els.newChannelHandle.value = '';
+    els.newChannelTopic.value = '';
+    renderChannelManager();
+    renderFeedChannelFilter();
+    renderVideoViews();
+  });
+
+  // Notizen als Markdown / in Obsidian exportieren
+  els.btnExportNotes.addEventListener('click', () => {
+    downloadMarkdownFile(`focustube-notizen-${getDateKey()}.md`, buildAllNotesObsidianMarkdown());
+  });
+
+  if (els.btnExportObsidianAll) {
+    els.btnExportObsidianAll.addEventListener('click', () => {
+      openInObsidianUri(`FocusTube-Notizen-${getDateKey()}`, buildAllNotesObsidianMarkdown());
+    });
+  }
+
+  // Sync Modal
+  els.btnOpenSync.addEventListener('click', () => {
+    updateSyncUi();
+    els.syncModal.classList.remove('hidden');
+  });
+  els.btnCloseSync.addEventListener('click', () => els.syncModal.classList.add('hidden'));
+  els.syncModal.addEventListener('click', (e) => {
+    if (e.target === els.syncModal) els.syncModal.classList.add('hidden');
+  });
+
+  if (els.btnPickObsidianDir) {
+    els.btnPickObsidianDir.addEventListener('click', async () => {
+      if (typeof window.showDirectoryPicker !== 'function') {
+        els.obsidianDirStatus.textContent = 'Dein Browser unterstützt die direkte Ordner-Verknüpfung nicht (nutze Chrome/Edge/Arc oder „obsidian://“).';
+        return;
+      }
+      try {
+        obsidianDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+        await idbPutObsidianDir(obsidianDirHandle);
+        updateSyncUi();
+      } catch {
+        // Nutzer hat Auswahl abgebrochen
+      }
+    });
+  }
+
+  els.btnSaveApiConfig.addEventListener('click', () => {
+    state.apiConfig.clientId = els.inputOauthClientId.value.trim();
+    state.apiConfig.apiKey = els.inputYtApiKey.value.trim();
+    if (els.inputGeminiApiKey) state.apiConfig.geminiKey = els.inputGeminiApiKey.value.trim();
+    if (els.selectGeminiModel) state.apiConfig.geminiModel = els.selectGeminiModel.value;
+    if (els.inputObsidianVault) state.obsidianConfig.vaultName = els.inputObsidianVault.value.trim();
+    if (els.inputObsidianFolder) state.obsidianConfig.folder = els.inputObsidianFolder.value.trim() || 'FocusTube';
+    saveState();
+    updateSyncUi();
+    els.syncStatusText.textContent = 'YouTube-, Gemini- & Obsidian-Konfiguration lokal im Browser gespeichert.';
+  });
+
+  els.btnGoogleLogin.addEventListener('click', () => {
+    const clientId = els.inputOauthClientId.value.trim() || state.apiConfig.clientId;
+    if (!clientId) {
+      els.syncStatusText.textContent = 'Bitte zuerst deine Google OAuth 2.0 Client-ID eintragen.';
+      return;
+    }
+    state.apiConfig.clientId = clientId;
+    state.apiConfig.apiKey = els.inputYtApiKey.value.trim();
+    if (els.inputGeminiApiKey) state.apiConfig.geminiKey = els.inputGeminiApiKey.value.trim();
+    saveState();
+
+    if (!window.google?.accounts?.oauth2) {
+      els.syncStatusText.textContent = 'Google Identity Services konnte nicht geladen werden (offline oder von Adblocker blockiert).';
+      return;
+    }
+
+    tokenClient = window.google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: 'https://www.googleapis.com/auth/youtube',
+      callback: (resp) => {
+        if (resp.error) {
+          els.syncStatusText.textContent = `Login abgebrochen oder Fehler: ${resp.error}`;
+          return;
+        }
+        oauthAccessToken = resp.access_token;
+        updateSyncUi();
+        syncSubscriptionsFromApi();
+      }
+    });
+    tokenClient.requestAccessToken();
+  });
+
+  els.btnFetchUuUploads.addEventListener('click', fetchLiveUploadsViaUuTrick);
+}
+
+function renderAllViews() {
+  renderLearningGoals();
+  renderDiscoverGoalPills();
+  renderDiscoveryResults();
+  renderFeedChannelFilter();
+  renderVideoViews();
+  renderDashboard();
+  renderChannelManager();
+  renderAllNotesTab();
+  updateTimerUI();
+  updateSyncUi();
+}
+
+async function init() {
+  obsidianDirHandle = await idbGetObsidianDir();
+  bindEvents();
+  setMode(state.mode);
+  setTab(state.activeTab);
+  renderAllViews();
+  loadYouTubeIframeApi();
+}
+
+init();
