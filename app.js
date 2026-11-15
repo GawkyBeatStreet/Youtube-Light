@@ -119,7 +119,8 @@ function loadState() {
     calmTitles: true,
     calmThumbnails: true,
     floodBrake: true,
-    hideWatched: false,
+    hideWatched: true,
+    hideWatchedDefaultV2: true,
     densityPreference: 'dense',
     activeGoals: LEARNING_GOALS.map((g) => g.id),
     channels: INITIAL_CHANNELS.map((c) => ({ ...c })),
@@ -154,6 +155,8 @@ function loadState() {
     return {
       ...fallback,
       ...parsed,
+      hideWatched: parsed.hideWatchedDefaultV2 ? parsed.hideWatched : true,
+      hideWatchedDefaultV2: true,
       budgets: { ...fallback.budgets, ...(parsed.budgets || {}) },
       obsidianConfig: { ...fallback.obsidianConfig, ...(parsed.obsidianConfig || {}) },
       apiConfig: { ...fallback.apiConfig, ...(parsed.apiConfig || {}) },
@@ -791,6 +794,7 @@ function markVideoWatched(videoId, forceWatched = null) {
   saveState();
   updateWatchedButtonUI();
   renderVideoViews();
+  renderDiscoveryResults();
 }
 
 function updateWatchedButtonUI() {
@@ -1799,7 +1803,8 @@ function setDiscoverStatus(html, isVisible = true) {
 
 function renderDiscoveryResults() {
   if (!els.discoverResultsGrid) return;
-  const list = state.discoveryResults || [];
+  const watchedSet = new Set(state.watchedIds || []);
+  const list = (state.discoveryResults || []).filter((v) => !watchedSet.has(v.id));
   if (els.statDiscoverCount) els.statDiscoverCount.textContent = String(list.length);
   if (els.statDiscoverBlocked) els.statDiscoverBlocked.textContent = String((state.blockedDiscoveryChannels || []).length);
 
@@ -2055,6 +2060,7 @@ async function runKnowledgeDiscovery() {
         const vidId = item.id?.videoId;
         const snip = item.snippet;
         if (!vidId || !snip) return;
+        if ((state.watchedIds || []).includes(vidId)) return;
         const chId = snip.channelId || '';
         const chTitle = snip.channelTitle || '';
         if (subChannelIds.has(chId) || subChannelNames.has(chTitle.toLowerCase())) return;
@@ -2111,6 +2117,7 @@ async function runKnowledgeDiscovery() {
         };
       })
       .filter((v) => {
+        if ((state.watchedIds || []).includes(v.id)) return false;
         if (v.durationSec < 240) return false; // < 4 Min. herausfiltern (Shorts & Snippets)
         if (lengthPref === 'compact' && v.durationSec > 1680) return false; // > 28 Min. herausfiltern bei Kompakt-Präferenz
         if (lengthPref === 'medium' && v.durationSec > 2700) return false;
