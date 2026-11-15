@@ -525,10 +525,15 @@ textarea:focus {
 }
 
 .player-stage {
+  position: relative;
   background: #111113;
   border-radius: var(--radius-md);
   overflow: hidden;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.14);
+}
+
+.player-stage.controls-hidden .player-shield {
+  cursor: none;
 }
 
 .player-stage:fullscreen {
@@ -638,11 +643,38 @@ textarea:focus {
   flex-wrap: wrap;
 }
 
-/* Eigene dunkle Theater-Steuerleiste direkt unter dem Video */
+/* Eigene dunkle Theater-Steuerleiste über dem unteren Videorand (blendet beim Abspielen nach 10s aus) */
 .custom-controls {
-  padding: 12px 16px;
-  background: #1c1c1e;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 25;
+  padding: 22px 16px 12px;
+  background: linear-gradient(180deg, rgba(17, 17, 19, 0) 0%, rgba(17, 17, 19, 0.82) 32%, rgba(17, 17, 19, 0.96) 100%);
   color: #f5f5f7;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.28s ease, transform 0.28s ease;
+}
+
+.player-stage.controls-hidden .custom-controls {
+  opacity: 0;
+  transform: translateY(10px);
+  pointer-events: none;
+}
+
+@media (max-width: 640px) {
+  .player-stage:not(:fullscreen) .custom-controls {
+    position: relative;
+    padding: 12px 16px;
+    background: #1c1c1e;
+  }
+
+  .player-stage:not(:fullscreen).controls-hidden .custom-controls {
+    opacity: 0;
+    transform: none;
+  }
 }
 
 .scrubber-row {

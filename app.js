@@ -221,6 +221,8 @@ let scrubberPollTimer = null;
 let lastVideoDuration = 0;
 let lastProgressSavedAt = 0;
 let endScreenTriggered = false;
+let controlsHideTimer = null;
+let isControlsHovered = false;
 let oauthAccessToken = null;
 let tokenClient = null;
 let obsidianDirHandle = null;
@@ -269,6 +271,7 @@ const els = {
   // Player Workspace
   playerWorkspace: document.getElementById('player-workspace'),
   playerStage: document.getElementById('player-stage'),
+  customControls: document.querySelector('.custom-controls'),
   playerShield: document.getElementById('player-shield'),
   focusOverlay: document.getElementById('focus-overlay'),
   overlayBadge: document.getElementById('overlay-badge'),
@@ -881,6 +884,36 @@ function initOrLoadYtPlayer(videoId, startSec = 0) {
   });
 }
 
+function clearControlsHideTimer() {
+  if (controlsHideTimer) {
+    clearTimeout(controlsHideTimer);
+    controlsHideTimer = null;
+  }
+  if (els.playerStage) {
+    els.playerStage.classList.remove('controls-hidden');
+  }
+}
+
+function scheduleControlsHide() {
+  if (controlsHideTimer) {
+    clearTimeout(controlsHideTimer);
+    controlsHideTimer = null;
+  }
+  if (!isVideoPlaying || isControlsHovered) return;
+  controlsHideTimer = setTimeout(() => {
+    if (isVideoPlaying && !isControlsHovered && els.playerStage) {
+      els.playerStage.classList.add('controls-hidden');
+    }
+  }, 10000);
+}
+
+function showPlayerControlsTemporarily() {
+  if (els.playerStage) {
+    els.playerStage.classList.remove('controls-hidden');
+  }
+  scheduleControlsHide();
+}
+
 function handlePlayerStateChange(event) {
   const YTState = window.YT?.PlayerState;
   if (!YTState) return;
@@ -895,10 +928,12 @@ function handlePlayerStateChange(event) {
     applyQualitySetting(event.target);
     startScrubberPoll();
     updateTimerUI();
+    showPlayerControlsTemporarily();
   } else if (event.data === YTState.PAUSED) {
     isVideoPlaying = false;
     els.ctrlPlayPause.textContent = '▶ Play';
     stopScrubberPoll();
+    clearControlsHideTimer();
     saveActiveVideoProgress(true);
     updateTimerUI();
     if (!endScreenTriggered) {
@@ -913,6 +948,7 @@ function handlePlayerStateChange(event) {
     endScreenTriggered = true;
     els.ctrlPlayPause.textContent = '▶ Play';
     stopScrubberPoll();
+    clearControlsHideTimer();
     clearPlaybackProgress(activeVideoId);
     markVideoWatched(activeVideoId, true);
     showFocusOverlay(
@@ -968,6 +1004,7 @@ function startScrubberPoll() {
       } catch {
         // Ignore
       }
+      clearControlsHideTimer();
       clearPlaybackProgress(activeVideoId);
       markVideoWatched(activeVideoId, true);
       showFocusOverlay(
@@ -1045,6 +1082,7 @@ function openVideoInWorkspace(videoId) {
   renderPlayerChapters(video);
   renderPlayerNotes(video.id);
   hideFocusOverlay();
+  clearControlsHideTimer();
 
   initOrLoadYtPlayer(video.id, resumeSec);
   els.playerWorkspace.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1060,7 +1098,9 @@ function closePlayerWorkspace() {
     }
   }
   isVideoPlaying = false;
+  isControlsHovered = false;
   stopScrubberPoll();
+  clearControlsHideTimer();
   hideFocusOverlay();
   els.playerWorkspace.classList.add('hidden');
   activeVideoId = null;
@@ -2855,7 +2895,28 @@ function bindEvents() {
   }
 
   // Player & Schutzschild Controls
-  els.playerShield.addEventListener('click', togglePlayPause);
+  els.playerShield.addEventListener('click', () => {
+    showPlayerControlsTemporarily();
+    togglePlayPause();
+  });
+  if (els.playerStage) {
+    ['pointermove', 'mousemove', 'touchstart', 'pointerdown'].forEach((evt) => {
+      els.playerStage.addEventListener(evt, showPlayerControlsTemporarily, { passive: true });
+    });
+  }
+  if (els.customControls) {
+    els.customControls.addEventListener('pointerenter', () => {
+      isControlsHovered = true;
+      clearControlsHideTimer();
+    });
+    els.customControls.addEventListener('pointerleave', () => {
+      isControlsHovered = false;
+      scheduleControlsHide();
+    });
+    ['input', 'change', 'click'].forEach((evt) => {
+      els.customControls.addEventListener(evt, showPlayerControlsTemporarily);
+    });
+  }
   els.ctrlPlayPause.addEventListener('click', togglePlayPause);
   els.ctrlBack15.addEventListener('click', () => seekRelative(-15));
   els.ctrlFwd15.addEventListener('click', () => seekRelative(15));
