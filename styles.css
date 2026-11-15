@@ -1177,6 +1177,35 @@ body.calm-thumbnails .video-card:hover .video-thumb img {
   font-variant-numeric: tabular-nums;
 }
 
+.resume-badge {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  background: rgba(0, 113, 227, 0.9);
+  backdrop-filter: blur(8px);
+  color: #ffffff;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.71rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.thumb-progress-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3.5px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.thumb-progress-fill {
+  height: 100%;
+  background: var(--apple-blue);
+  border-radius: 0 2px 2px 0;
+}
+
 .score-badge {
   position: absolute;
   left: 10px;

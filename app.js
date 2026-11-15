@@ -142,6 +142,7 @@ function loadState() {
     channels: INITIAL_CHANNELS.map((c) => ({ ...c })),
     videos: INITIAL_VIDEOS.map((v) => ({ ...v })),
     watchedIds: [],
+    playbackProgress: {},
     blockedShorts: [],
     notesByVideo: {},
     aiSummaries: {},
@@ -182,6 +183,8 @@ function loadState() {
       hideWatched: parsed.hideWatchedDefaultV2 ? parsed.hideWatched : true,
       hideWatchedDefaultV2: true,
       customGoals: Array.isArray(parsed.customGoals) ? parsed.customGoals : [],
+      playbackProgress:
+        parsed.playbackProgress && typeof parsed.playbackProgress === 'object' ? parsed.playbackProgress : {},
       blockedShorts: Array.isArray(parsed.blockedShorts) ? parsed.blockedShorts : [],
       budgets: { ...fallback.budgets, ...(parsed.budgets || {}) },
       obsidianConfig: { ...fallback.obsidianConfig, ...(parsed.obsidianConfig || {}) },
@@ -209,12 +212,14 @@ function saveState() {
 let ytPlayer = null;
 let ytApiReady = false;
 let pendingVideoToLoad = null;
+let pendingVideoStartSec = 0;
 let activeVideoId = null;
 let isVideoPlaying = false;
 let manualTimerActive = false;
 let playbackRate = 1;
 let scrubberPollTimer = null;
 let lastVideoDuration = 0;
+let lastProgressSavedAt = 0;
 let endScreenTriggered = false;
 let oauthAccessToken = null;
 let tokenClient = null;
@@ -647,10 +652,85 @@ window.onYouTubeIframeAPIReady = function () {
   ytApiReady = true;
   if (pendingVideoToLoad) {
     const id = pendingVideoToLoad;
+    const startSec = pendingVideoStartSec || 0;
     pendingVideoToLoad = null;
-    initOrLoadYtPlayer(id);
+    pendingVideoStartSec = 0;
+    initOrLoadYtPlayer(id, startSec);
   }
 };
+
+function getResumeSeconds(videoId, videoDuration = 0) {
+  if (!videoId || (state.watchedIds || []).includes(videoId)) return 0;
+  const entry = state.playbackProgress?.[videoId];
+  if (!entry || typeof entry.currentSec !== 'number' || entry.currentSec < 5) return 0;
+  const dur = entry.durationSec || videoDuration || 0;
+  if (dur > 15 && entry.currentSec >= dur - 10) return 0;
+  return Math.floor(entry.currentSec);
+}
+
+function savePlaybackProgress(videoId, currentSec, durationSec = 0, forcePersist = false) {
+  if (!videoId || typeof currentSec !== 'number' || Number.isNaN(currentSec)) return;
+  if (!state.playbackProgress || typeof state.playbackProgress !== 'object') {
+    state.playbackProgress = {};
+  }
+
+  const dur = durationSec > 0 ? durationSec : state.playbackProgress[videoId]?.durationSec || 0;
+  if (dur > 15 && currentSec >= dur - 10) {
+    if (state.playbackProgress[videoId]) {
+      delete state.playbackProgress[videoId];
+      saveState();
+    }
+    return;
+  }
+
+  if (currentSec < 5) {
+    if (forcePersist && state.playbackProgress[videoId]) {
+      delete state.playbackProgress[videoId];
+      saveState();
+    }
+    return;
+  }
+
+  state.playbackProgress[videoId] = {
+    currentSec: Math.floor(currentSec),
+    durationSec: Math.round(dur),
+    updatedAt: Date.now()
+  };
+
+  const now = Date.now();
+  if (forcePersist || now - lastProgressSavedAt >= 3000) {
+    lastProgressSavedAt = now;
+    saveState();
+  }
+}
+
+function clearPlaybackProgress(videoId) {
+  if (!videoId || !state.playbackProgress?.[videoId]) return;
+  delete state.playbackProgress[videoId];
+  saveState();
+}
+
+function saveActiveVideoProgress(forcePersist = true) {
+  if (!activeVideoId || !ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
+  try {
+    const current = ytPlayer.getCurrentTime() || 0;
+    const duration = ytPlayer.getDuration() || lastVideoDuration || 0;
+    savePlaybackProgress(activeVideoId, current, duration, forcePersist);
+  } catch {
+    // Player evtl. nicht bereit
+  }
+}
+
+function renderThumbProgressHtml(video) {
+  const resumeSec = getResumeSeconds(video.id, video.durationSec);
+  if (resumeSec <= 0) return '';
+  const totalDur = video.durationSec || state.playbackProgress?.[video.id]?.durationSec || 0;
+  const pct = totalDur > 0 ? Math.min(98, Math.max(4, Math.round((resumeSec / totalDur) * 100))) : 15;
+  return `
+    <span class="resume-badge">Weiter ${formatMMSS(resumeSec)}</span>
+    <div class="thumb-progress-track"><div class="thumb-progress-fill" style="width:${pct}%"></div></div>
+  `;
+}
 
 const QUALITY_LABELS = {
   highres: '4K',
@@ -739,9 +819,11 @@ function applyQualitySetting(player) {
   }
 }
 
-function initOrLoadYtPlayer(videoId) {
+function initOrLoadYtPlayer(videoId, startSec = 0) {
+  const cleanStart = Math.max(0, Math.floor(startSec || 0));
   if (!ytApiReady || !window.YT || !window.YT.Player) {
     pendingVideoToLoad = videoId;
+    pendingVideoStartSec = cleanStart;
     loadYouTubeIframeApi();
     return;
   }
@@ -749,11 +831,10 @@ function initOrLoadYtPlayer(videoId) {
   const preferredQuality = state.playerPrefs?.quality || 'default';
 
   if (ytPlayer && typeof ytPlayer.loadVideoById === 'function') {
-    ytPlayer.loadVideoById(
-      preferredQuality !== 'default'
-        ? { videoId, suggestedQuality: preferredQuality }
-        : videoId
-    );
+    const loadOpts = { videoId };
+    if (cleanStart > 0) loadOpts.startSeconds = cleanStart;
+    if (preferredQuality !== 'default') loadOpts.suggestedQuality = preferredQuality;
+    ytPlayer.loadVideoById(loadOpts);
     ytPlayer.setPlaybackRate(playbackRate);
     applyCaptionsSetting(ytPlayer);
     applyQualitySetting(ytPlayer);
@@ -770,6 +851,9 @@ function initOrLoadYtPlayer(videoId) {
     fs: 0,
     playsinline: 1
   };
+  if (cleanStart > 0) {
+    playerVars.start = cleanStart;
+  }
   if (window.location.protocol.startsWith('http')) {
     playerVars.origin = window.location.origin;
   }
@@ -815,6 +899,7 @@ function handlePlayerStateChange(event) {
     isVideoPlaying = false;
     els.ctrlPlayPause.textContent = '▶ Play';
     stopScrubberPoll();
+    saveActiveVideoProgress(true);
     updateTimerUI();
     if (!endScreenTriggered) {
       showFocusOverlay(
@@ -828,6 +913,7 @@ function handlePlayerStateChange(event) {
     endScreenTriggered = true;
     els.ctrlPlayPause.textContent = '▶ Play';
     stopScrubberPoll();
+    clearPlaybackProgress(activeVideoId);
     markVideoWatched(activeVideoId, true);
     showFocusOverlay(
       'ended',
@@ -868,6 +954,8 @@ function startScrubberPoll() {
       els.ctrlScrubber.value = String((current / duration) * 100);
     }
 
+    savePlaybackProgress(activeVideoId, current, duration, false);
+
     // Aktives Kapitel hervorheben
     highlightActiveChapter(current);
 
@@ -880,6 +968,7 @@ function startScrubberPoll() {
       } catch {
         // Ignore
       }
+      clearPlaybackProgress(activeVideoId);
       markVideoWatched(activeVideoId, true);
       showFocusOverlay(
         'ended',
@@ -914,6 +1003,10 @@ function openVideoInWorkspace(videoId) {
   const video = findVideoById(videoId);
   if (!video) return;
 
+  if (activeVideoId && activeVideoId !== video.id) {
+    saveActiveVideoProgress(true);
+  }
+
   const effectiveCat = video.isDiscovery ? 'learning' : getChannelCategory(video.channelHandle);
   if (effectiveCat === 'entertainment' && isEntertainmentLocked()) {
     alert('Dein heutiges Unterhaltungs-Budget ist aufgebraucht. Wechsle in den Lern-Modus oder passe das Limit im Wochen-Dashboard an.');
@@ -927,6 +1020,7 @@ function openVideoInWorkspace(videoId) {
     }
   }
 
+  const resumeSec = getResumeSeconds(video.id, video.durationSec);
   activeVideoId = video.id;
   lastVideoDuration = video.durationSec || 0;
   endScreenTriggered = false;
@@ -938,10 +1032,11 @@ function openVideoInWorkspace(videoId) {
   els.playerChannelName.textContent = video.channelName;
   els.playerTopic.textContent = video.topic;
   els.playerDurationLabel.textContent = video.durationText || formatMMSS(video.durationSec);
-  els.ctrlCurrentTime.textContent = '00:00';
+  els.ctrlCurrentTime.textContent = formatMMSS(resumeSec);
   els.ctrlTotalTime.textContent = video.durationText || '00:00';
-  els.ctrlScrubber.value = '0';
-  els.noteTimestampPreview.textContent = '00:00';
+  els.ctrlScrubber.value =
+    video.durationSec > 0 && resumeSec > 0 ? String(Math.min(99, (resumeSec / video.durationSec) * 100)) : '0';
+  els.noteTimestampPreview.textContent = formatMMSS(resumeSec);
   if (els.playerObsidianStatus) els.playerObsidianStatus.textContent = '';
   if (els.aiTranscriptInput) els.aiTranscriptInput.value = '';
   renderAiSummaryBox(video.id);
@@ -951,11 +1046,12 @@ function openVideoInWorkspace(videoId) {
   renderPlayerNotes(video.id);
   hideFocusOverlay();
 
-  initOrLoadYtPlayer(video.id);
+  initOrLoadYtPlayer(video.id, resumeSec);
   els.playerWorkspace.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function closePlayerWorkspace() {
+  saveActiveVideoProgress(true);
   if (ytPlayer && typeof ytPlayer.pauseVideo === 'function') {
     try {
       ytPlayer.pauseVideo();
@@ -969,6 +1065,8 @@ function closePlayerWorkspace() {
   els.playerWorkspace.classList.add('hidden');
   activeVideoId = null;
   updateTimerUI();
+  renderVideoViews();
+  renderDiscoveryResults();
 }
 
 function togglePlayPause() {
@@ -996,6 +1094,9 @@ function seekRelative(deltaSec) {
   const target = Math.max(0, Math.min(duration || current + deltaSec, current + deltaSec));
   ytPlayer.seekTo(target, true);
   els.ctrlCurrentTime.textContent = formatMMSS(target);
+  if (activeVideoId) {
+    savePlaybackProgress(activeVideoId, target, duration, true);
+  }
 }
 
 function markVideoWatched(videoId, forceWatched = null) {
@@ -1004,6 +1105,9 @@ function markVideoWatched(videoId, forceWatched = null) {
   const shouldWatch = forceWatched !== null ? forceWatched : !exists;
   if (shouldWatch && !exists) {
     state.watchedIds.push(videoId);
+    if (state.playbackProgress?.[videoId]) {
+      delete state.playbackProgress[videoId];
+    }
   } else if (!shouldWatch && exists) {
     state.watchedIds = state.watchedIds.filter((id) => id !== videoId);
   }
@@ -1287,6 +1391,7 @@ function createVideoCardHtml(video, showFocusScore = true) {
         <img src="${thumbUrl}" alt="${escapeHtml(title)}" loading="lazy" />
         ${showFocusScore ? `<span class="score-badge">Focus ${video.focusScore}</span>` : ''}
         <span class="duration-badge">${escapeHtml(video.durationText || formatMMSS(video.durationSec))}</span>
+        ${!isWatched ? renderThumbProgressHtml(video) : ''}
       </div>
       <div class="video-body">
         <div class="video-meta-top">
@@ -2186,6 +2291,7 @@ function renderDiscoveryResults() {
             <img src="${thumbUrl}" alt="${escapeHtml(title)}" loading="lazy" />
             <span class="score-badge">Dichte ${v.aiDensityScore ?? v.focusScore ?? 85}</span>
             <span class="duration-badge">${escapeHtml(v.durationText || formatMMSS(v.durationSec))}</span>
+            ${renderThumbProgressHtml(v)}
           </div>
           <div class="video-body">
             <div class="video-meta-top">
@@ -2761,7 +2867,13 @@ function bindEvents() {
     endScreenTriggered = false;
     ytPlayer.seekTo(target, true);
     els.ctrlCurrentTime.textContent = formatMMSS(target);
+    if (activeVideoId) {
+      savePlaybackProgress(activeVideoId, target, duration, true);
+    }
   });
+
+  window.addEventListener('pagehide', () => saveActiveVideoProgress(true));
+  window.addEventListener('beforeunload', () => saveActiveVideoProgress(true));
 
   els.ctrlMute.addEventListener('click', () => {
     if (!ytPlayer || typeof ytPlayer.isMuted !== 'function') return;
