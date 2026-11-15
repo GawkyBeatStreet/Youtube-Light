@@ -9,6 +9,17 @@ import {
 const STORAGE_KEY = 'focustube_state_v1';
 const WEEKDAY_NAMES = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
 const MON_TO_SUN_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
+const DEPRECATED_GEMINI_MODEL_MAP = {
+  'gemini-2.5-flash': 'gemini-3.5-flash-lite',
+  'gemini-2.5-pro': 'gemini-3.8-flash'
+};
+
+function normalizeGeminiModel(model) {
+  const m = String(model || '').trim();
+  if (!m) return DEFAULT_GEMINI_MODEL;
+  return DEPRECATED_GEMINI_MODEL_MAP[m] || m;
+}
 
 // --- HILFSFUNKTIONEN ---
 function escapeHtml(str = '') {
@@ -148,7 +159,7 @@ function loadState() {
       clientId: '',
       apiKey: '',
       geminiKey: '',
-      geminiModel: 'gemini-2.5-flash'
+      geminiModel: DEFAULT_GEMINI_MODEL
     }
   };
 
@@ -156,6 +167,8 @@ function loadState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
+    const mergedApiConfig = { ...fallback.apiConfig, ...(parsed.apiConfig || {}) };
+    mergedApiConfig.geminiModel = normalizeGeminiModel(mergedApiConfig.geminiModel);
     return {
       ...fallback,
       ...parsed,
@@ -164,7 +177,7 @@ function loadState() {
       budgets: { ...fallback.budgets, ...(parsed.budgets || {}) },
       obsidianConfig: { ...fallback.obsidianConfig, ...(parsed.obsidianConfig || {}) },
       playerPrefs: { ...fallback.playerPrefs, ...(parsed.playerPrefs || {}) },
-      apiConfig: { ...fallback.apiConfig, ...(parsed.apiConfig || {}) },
+      apiConfig: mergedApiConfig,
       dailyLogs: seedCurrentWeekLogs(parsed.dailyLogs || {})
     };
   } catch {
@@ -1411,9 +1424,9 @@ function updateSyncUi() {
   els.inputOauthClientId.value = state.apiConfig.clientId || '';
   els.inputYtApiKey.value = state.apiConfig.apiKey || '';
   if (els.inputGeminiApiKey) els.inputGeminiApiKey.value = state.apiConfig.geminiKey || '';
-  if (els.selectGeminiModel) els.selectGeminiModel.value = state.apiConfig.geminiModel || 'gemini-2.5-flash';
+  if (els.selectGeminiModel) els.selectGeminiModel.value = normalizeGeminiModel(state.apiConfig.geminiModel);
   if (els.inputObsidianVault) els.inputObsidianVault.value = state.obsidianConfig.vaultName || '';
-  if (els.inputObsidianFolder) els.inputObsidianFolder.value = state.obsidianConfig.folder || 'FocusTube';
+  if (els.inputObsidianFolder) els.inputObsidianFolder.value = state.obsidianConfig.folder || 'YouTube';
   if (els.obsidianDirStatus) {
     els.obsidianDirStatus.textContent = obsidianDirHandle
       ? `Verknüpft mit lokalem Ordner: ${obsidianDirHandle.name}`
@@ -1839,27 +1852,38 @@ async function saveMarkdownToVaultOrDownload(baseFilename, markdownContent) {
 }
 
 // --- GEMINI REST API HELPER (DIRECT CORS FROM BROWSER) ---
+async function sendGeminiRequest(targetModel, promptText, { expectJson = false, temperature = 0.3, apiKey }) {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(targetModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const generationConfig = {
+    ...(expectJson ? { responseMimeType: 'application/json' } : {}),
+    ...(targetModel.startsWith('gemini-2.') ? { temperature } : {})
+  };
+
+  return fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: promptText }] }],
+      ...(Object.keys(generationConfig).length > 0 ? { generationConfig } : {})
+    })
+  });
+}
+
 async function callGeminiApi(promptText, { expectJson = false, temperature = 0.3 } = {}) {
   const apiKey = (state.apiConfig.geminiKey || '').trim();
   if (!apiKey) {
     throw new Error('Kein Gemini API Key hinterlegt. Bitte im Modal „🔗 Sync, Gemini & Obsidian“ eintragen.');
   }
-  const model = state.apiConfig.geminiModel || 'gemini-2.5-flash';
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  let model = normalizeGeminiModel(state.apiConfig.geminiModel);
+  let res = await sendGeminiRequest(model, promptText, { expectJson, temperature, apiKey });
 
-  const body = {
-    contents: [{ role: 'user', parts: [{ text: promptText }] }],
-    generationConfig: {
-      temperature,
-      ...(expectJson ? { responseMimeType: 'application/json' } : {})
-    }
-  };
-
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
+  if (res.status === 404 && model !== DEFAULT_GEMINI_MODEL) {
+    model = DEFAULT_GEMINI_MODEL;
+    state.apiConfig.geminiModel = model;
+    saveState();
+    updateSyncUi();
+    res = await sendGeminiRequest(model, promptText, { expectJson, temperature, apiKey });
+  }
 
   if (!res.ok) {
     const errText = await res.text();
@@ -2740,7 +2764,7 @@ function bindEvents() {
     if (els.inputGeminiApiKey) state.apiConfig.geminiKey = els.inputGeminiApiKey.value.trim();
     if (els.selectGeminiModel) state.apiConfig.geminiModel = els.selectGeminiModel.value;
     if (els.inputObsidianVault) state.obsidianConfig.vaultName = els.inputObsidianVault.value.trim();
-    if (els.inputObsidianFolder) state.obsidianConfig.folder = els.inputObsidianFolder.value.trim() || 'FocusTube';
+    if (els.inputObsidianFolder) state.obsidianConfig.folder = els.inputObsidianFolder.value.trim() || 'YouTube';
     saveState();
     updateSyncUi();
     els.syncStatusText.textContent = 'YouTube-, Gemini- & Obsidian-Konfiguration lokal im Browser gespeichert.';
