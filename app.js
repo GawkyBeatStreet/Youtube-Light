@@ -140,6 +140,10 @@ function loadState() {
       vaultName: '',
       folder: 'FocusTube'
     },
+    playerPrefs: {
+      captionsEnabled: false,
+      quality: 'default'
+    },
     apiConfig: {
       clientId: '',
       apiKey: '',
@@ -159,6 +163,7 @@ function loadState() {
       hideWatchedDefaultV2: true,
       budgets: { ...fallback.budgets, ...(parsed.budgets || {}) },
       obsidianConfig: { ...fallback.obsidianConfig, ...(parsed.obsidianConfig || {}) },
+      playerPrefs: { ...fallback.playerPrefs, ...(parsed.playerPrefs || {}) },
       apiConfig: { ...fallback.apiConfig, ...(parsed.apiConfig || {}) },
       dailyLogs: seedCurrentWeekLogs(parsed.dailyLogs || {})
     };
@@ -257,6 +262,8 @@ const els = {
   ctrlBack15: document.getElementById('ctrl-back-15'),
   ctrlFwd15: document.getElementById('ctrl-fwd-15'),
   ctrlMute: document.getElementById('ctrl-mute'),
+  ctrlCaptions: document.getElementById('ctrl-captions'),
+  ctrlQuality: document.getElementById('ctrl-quality'),
   ctrlFullscreen: document.getElementById('ctrl-fullscreen'),
   speedButtons: document.querySelectorAll('.speed-btn'),
   playerChaptersList: document.getElementById('player-chapters-list'),
@@ -543,6 +550,93 @@ window.onYouTubeIframeAPIReady = function () {
   }
 };
 
+const QUALITY_LABELS = {
+  highres: '4K',
+  hd2160: '2160p',
+  hd1440: '1440p',
+  hd1080: '1080p',
+  hd720: '720p',
+  large: '480p',
+  medium: '360p',
+  small: '240p',
+  tiny: '144p',
+  auto: 'Auto',
+  default: 'Auto'
+};
+
+function updateCaptionsUi() {
+  if (!els.ctrlCaptions) return;
+  const enabled = Boolean(state.playerPrefs?.captionsEnabled);
+  els.ctrlCaptions.textContent = enabled ? 'CC An' : 'CC Aus';
+  els.ctrlCaptions.classList.toggle('active', enabled);
+}
+
+function applyCaptionsSetting(player) {
+  if (!player) return;
+  const enabled = Boolean(state.playerPrefs?.captionsEnabled);
+  try {
+    if (!enabled) {
+      if (typeof player.setOption === 'function') {
+        player.setOption('captions', 'track', {});
+      }
+      if (typeof player.unloadModule === 'function') {
+        player.unloadModule('captions');
+      }
+    } else {
+      if (typeof player.loadModule === 'function') {
+        player.loadModule('captions');
+      }
+      if (typeof player.getOption === 'function' && typeof player.setOption === 'function') {
+        const tracks = player.getOption('captions', 'tracklist');
+        if (Array.isArray(tracks) && tracks.length > 0) {
+          const preferred =
+            tracks.find((t) => t.languageCode === 'de') ||
+            tracks.find((t) => t.languageCode === 'en') ||
+            tracks[0];
+          if (preferred?.languageCode) {
+            player.setOption('captions', 'track', { languageCode: preferred.languageCode });
+          }
+        }
+      }
+    }
+  } catch {
+    // Modul noch nicht geladen
+  }
+}
+
+function refreshAvailableQualityLevels(player) {
+  if (!els.ctrlQuality || !player || typeof player.getAvailableQualityLevels !== 'function') return;
+  try {
+    const levels = player.getAvailableQualityLevels() || [];
+    if (!Array.isArray(levels) || levels.length === 0) return;
+    const filtered = levels.filter((lvl) => lvl !== 'auto');
+    const options = ['default', ...filtered];
+    const currentPref = state.playerPrefs?.quality || 'default';
+    els.ctrlQuality.innerHTML = options
+      .map((q) => `<option value="${escapeHtml(q)}">${escapeHtml(QUALITY_LABELS[q] || q)}</option>`)
+      .join('');
+    if (options.includes(currentPref)) {
+      els.ctrlQuality.value = currentPref;
+    } else {
+      els.ctrlQuality.value = 'default';
+    }
+  } catch {
+    // Fallback auf Standardoptionen
+  }
+}
+
+function applyQualitySetting(player) {
+  if (!player) return;
+  const q = state.playerPrefs?.quality || 'default';
+  try {
+    if (q !== 'default' && typeof player.setPlaybackQuality === 'function') {
+      player.setPlaybackQuality(q);
+    }
+  } catch {
+    // Ignorieren
+  }
+}
+
 function initOrLoadYtPlayer(videoId) {
   if (!ytApiReady || !window.YT || !window.YT.Player) {
     pendingVideoToLoad = videoId;
@@ -550,9 +644,17 @@ function initOrLoadYtPlayer(videoId) {
     return;
   }
 
+  const preferredQuality = state.playerPrefs?.quality || 'default';
+
   if (ytPlayer && typeof ytPlayer.loadVideoById === 'function') {
-    ytPlayer.loadVideoById(videoId);
+    ytPlayer.loadVideoById(
+      preferredQuality !== 'default'
+        ? { videoId, suggestedQuality: preferredQuality }
+        : videoId
+    );
     ytPlayer.setPlaybackRate(playbackRate);
+    applyCaptionsSetting(ytPlayer);
+    applyQualitySetting(ytPlayer);
     return;
   }
 
@@ -561,6 +663,7 @@ function initOrLoadYtPlayer(videoId) {
     rel: 0,
     modestbranding: 1,
     iv_load_policy: 3,
+    cc_load_policy: 0,
     disablekb: 1,
     fs: 0,
     playsinline: 1
@@ -575,7 +678,14 @@ function initOrLoadYtPlayer(videoId) {
     events: {
       onReady: (e) => {
         e.target.setPlaybackRate(playbackRate);
+        applyCaptionsSetting(e.target);
+        applyQualitySetting(e.target);
         e.target.playVideo();
+      },
+      onApiChange: (e) => {
+        applyCaptionsSetting(e.target);
+        refreshAvailableQualityLevels(e.target);
+        applyQualitySetting(e.target);
       },
       onStateChange: handlePlayerStateChange,
       onError: () => {
@@ -594,6 +704,9 @@ function handlePlayerStateChange(event) {
     endScreenTriggered = false;
     hideFocusOverlay();
     els.ctrlPlayPause.textContent = '⏸ Pause';
+    applyCaptionsSetting(event.target);
+    refreshAvailableQualityLevels(event.target);
+    applyQualitySetting(event.target);
     startScrubberPoll();
     updateTimerUI();
   } else if (event.data === YTState.PAUSED) {
@@ -2466,6 +2579,25 @@ function bindEvents() {
       els.ctrlMute.textContent = '🔇 Stumm';
     }
   });
+
+  updateCaptionsUi();
+  if (els.ctrlCaptions) {
+    els.ctrlCaptions.addEventListener('click', () => {
+      state.playerPrefs.captionsEnabled = !state.playerPrefs.captionsEnabled;
+      saveState();
+      updateCaptionsUi();
+      applyCaptionsSetting(ytPlayer);
+    });
+  }
+
+  if (els.ctrlQuality) {
+    els.ctrlQuality.value = state.playerPrefs?.quality || 'default';
+    els.ctrlQuality.addEventListener('change', () => {
+      state.playerPrefs.quality = els.ctrlQuality.value || 'default';
+      saveState();
+      applyQualitySetting(ytPlayer);
+    });
+  }
 
   els.speedButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
