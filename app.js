@@ -134,6 +134,7 @@ function loadState() {
     calmTitles: true,
     calmThumbnails: true,
     floodBrake: true,
+    filterAiSlop: true,
     hideWatched: true,
     hideWatchedDefaultV2: true,
     densityPreference: 'dense',
@@ -253,6 +254,7 @@ const els = {
   toggleCalmTitles: document.getElementById('toggle-calm-titles'),
   toggleCalmThumbs: document.getElementById('toggle-calm-thumbs'),
   toggleFloodBrake: document.getElementById('toggle-flood-brake'),
+  toggleFilterAi: document.getElementById('toggle-filter-ai'),
   toggleHideWatched: document.getElementById('toggle-hide-watched'),
   learningGoalsChips: document.getElementById('learning-goals-chips'),
   btnToggleAddGoal: document.getElementById('btn-toggle-add-goal'),
@@ -409,6 +411,53 @@ function hasClickbaitSignals(title = '') {
   return exclamations >= 2 || upperWords >= 2;
 }
 
+const AI_EXPLICIT_PATTERNS = [
+  /\belevenlabs\b/i,
+  /\binvideo\b/i,
+  /\bheygen\b/i,
+  /\bsynthesia\b/i,
+  /\bnotebooklm\b/i,
+  /\bplay\.ht\b/i,
+  /\bmurf\.ai\b/i,
+  /\bpictory\b/i,
+  /\bfliki\b/i,
+  /\btext[- ]to[- ]speech\b/i,
+  /\btts voice\b/i,
+  /\bai[- ]voice\b/i,
+  /\bai narrator\b/i,
+  /\bai[- ]generated\b/i,
+  /\bgenerated (?:by|with) ai\b/i,
+  /\bmade with ai\b/i,
+  /\bcreated with ai\b/i,
+  /\bsynthetic voice\b/i,
+  /\bfaceless (?:channel|ai|automation)\b/i,
+  /\bki[- ]stimme\b/i,
+  /\bki[- ]sprecher\b/i,
+  /\bki[- ]generiert\b/i,
+  /\bmit ki erstellt\b/i,
+  /\bautomatisch vertont\b/i,
+  /\bsynthetische stimme\b/i
+];
+
+const AI_SOFT_PATTERNS = [
+  /everything you need to know in \d+ min/i,
+  /alles was du wissen musst in \d+ min/i,
+  /\bcomplete history of .+ in \d+ minutes\b/i,
+  /\bai summary\b/i,
+  /\bki[- ]zusammenfassung\b/i
+];
+
+function detectAiVoiceSignals(video) {
+  const tags = Array.isArray(video?.tags) ? video.tags.join(' ') : '';
+  const text = `${video?.originalTitle || ''} ${video?.channelName || ''} ${video?.description || ''} ${tags}`;
+  const isExplicitAi = AI_EXPLICIT_PATTERNS.some((rx) => rx.test(text));
+  const softHits = AI_SOFT_PATTERNS.filter((rx) => rx.test(text)).length;
+  return {
+    isExplicitAi,
+    suspicionScore: (isExplicitAi ? 45 : 0) + softHits * 18
+  };
+}
+
 function computeDensityBonus(durationSec, pref = state.densityPreference || 'dense') {
   if (!durationSec || durationSec < 60) return 0;
   if (pref === 'dense') {
@@ -519,8 +568,9 @@ function computeFocusScore(video) {
   const chaptersPer10Min = video.durationSec > 0 ? chapters.length / Math.max(1, video.durationSec / 600) : 0;
   const structureBonus = chaptersPer10Min >= 2.2 ? 18 : hasChapters ? 11 : 0;
   const clickbaitPenalty = hasClickbaitSignals(video.originalTitle || '') ? -10 : 0;
+  const aiPenalty = state.filterAiSlop ? -Math.min(45, detectAiVoiceSignals(video).suspicionScore) : 0;
 
-  let raw = Math.round(base * 0.42 + goalBonus + densityBonus + structureBonus + clickbaitPenalty);
+  let raw = Math.round(base * 0.42 + goalBonus + densityBonus + structureBonus + clickbaitPenalty + aiPenalty);
   if (typeof video.aiDensityScore === 'number') {
     raw = Math.round(raw * 0.55 + video.aiDensityScore * 0.45);
   }
@@ -2609,9 +2659,9 @@ async function generateDiscoveryQueriesWithGemini(topic, lengthPref, langPref) {
 
   const prompt = [
     `Erstelle 2 bis 3 präzise YouTube-Suchanfragen zum Lern-Thema: "${topic}".`,
-    `Ziel: ${lengthHint} mit maximaler Informationsdichte und null Clickbait/Hype/Reaction-Content.`,
+    `Ziel: ${lengthHint} von ECHTEN menschlichen Experten, Vortragenden oder etablierten Fachkanälen (kein KI-Sprecher, keine automatisierten Faceless-AI-Zusammenfassungen, kein Clickbait).`,
     `Sprache: ${langHint}.`,
-    'Vermeide Begriffe wie "schnell reich", "krass", "reagiert", "top 10", "podcast clips". Nutze Fachbegriffe oder Wörter wie "explained", "mechanisms", "analyse", "case study", "intuition".',
+    'Vermeide Begriffe wie "schnell reich", "krass", "reagiert", "top 10", "podcast clips", "everything you need to know". Nutze Fachbegriffe oder Formate wie "lecture", "talk", "interview", "case study", "vortrag", "analyse", "mechanisms".',
     'Antworte ausschließlich als JSON-Objekt: {"queries": ["...", "..."], "focusAngle": "kurzer Satz was geprüft wird"}'
   ].join('\n');
 
@@ -2631,7 +2681,8 @@ async function scoreDiscoveryCandidatesWithGemini(topic, candidates, lengthPref)
     minutes: Math.round(c.durationSec / 60),
     chaptersCount: c.chapters.length,
     likeRatioPercent: c.likeRatioPercent,
-    descExcerpt: (c.description || '').slice(0, 360)
+    tags: Array.isArray(c.tags) ? c.tags.slice(0, 8) : [],
+    descExcerpt: (c.description || '').slice(0, 700)
   }));
 
   const lengthPreferenceText =
@@ -2642,9 +2693,13 @@ async function scoreDiscoveryCandidatesWithGemini(topic, candidates, lengthPref)
   const prompt = [
     `Bewerte diese realen YouTube-Videos für das Lernziel "${topic}".`,
     lengthPreferenceText,
-    'Sortiere Clickbait, oberflächliches Infotainment, Verkaufs-Funnels und unnötig gestreckte Laber-Videos konsequent aus.',
+    'EXTREM WICHTIG — KI-SPRECHER & FACELESS-AI AUSSORTIEREN:',
+    '- Der Nutzer HASST Videos mit KI-Sprecher / Text-to-Speech (z. B. ElevenLabs, NotebookLM, Synthesia, InVideo) oder automatisierte Faceless-AI-Massenware — selbst dann, wenn das Video faktisch dicht klingt oder viele Kapitel hat!',
+    '- Setze isAiVoiceOrSlop: true bei jedem Video, dessen Titel, Kanalname, Tags oder Beschreibung nach KI-Sprecher, generischer AI-Zusammenfassung, Content-Farm oder fehlender menschlicher Autorenschaft aussieht.',
+    '- Bevorzuge klar echte menschliche Sprecher, Vorträge, Interviews, Hochschulen, Fachjournalisten oder nachvollziehbare Creator mit echter Quellen-/Autorenangabe.',
+    '- Sortiere außerdem Clickbait, oberflächliches Infotainment, Verkaufs-Funnels und unnötig gestreckte Laber-Videos konsequent aus (isClickbait: true).',
     'Antworte ausschließlich als JSON-Array mit einem Objekt pro Video-ID:',
-    '[{"id": "...", "densityScore": 0-99, "isClickbait": true|false, "densityTag": "z.B. Hohe Dichte · 14 Min.", "reason": "1 ruhiger deutscher Satz, welches konkrete Wissen vermittelt wird"}]',
+    '[{"id": "...", "densityScore": 0-99, "humanAuthenticityScore": 0-99, "isClickbait": true|false, "isAiVoiceOrSlop": true|false, "densityTag": "z.B. Hohe Dichte · 14 Min.", "reason": "1 ruhiger deutscher Satz, welches konkrete Wissen vermittelt wird und warum es authentisch wirkt"}]',
     '',
     JSON.stringify(compactList)
   ].join('\n');
@@ -2700,7 +2755,7 @@ async function runKnowledgeDiscovery() {
     return;
   }
 
-  const cacheKey = `${topic.toLowerCase()}|${lengthPref}|${langPref}|${hasGemini ? 'ai' : 'noai'}`;
+  const cacheKey = `${topic.toLowerCase()}|${lengthPref}|${langPref}|${hasGemini ? 'ai' : 'noai'}|${state.filterAiSlop ? 'noai_voice_v2' : 'all_v2'}`;
   const cached = state.discoveryCache?.[cacheKey];
   if (cached && Date.now() - cached.ts < 12 * 60 * 60 * 1000) {
     state.discoveryResults = cached.results;
@@ -2800,6 +2855,7 @@ async function runKnowledgeDiscovery() {
           category: 'learning',
           topic,
           description: desc,
+          tags: Array.isArray(d.snippet?.tags) ? d.snippet.tags.slice(0, 12) : [],
           chapters,
           likeRatioPercent,
           isDiscovery: true
@@ -2817,18 +2873,19 @@ async function runKnowledgeDiscovery() {
           return false;
         }
         if (v.durationSec < 240) return false; // < 4 Min. herausfiltern (Shorts & Snippets)
+        if (state.filterAiSlop && detectAiVoiceSignals(v).isExplicitAi) return false;
         if (lengthPref === 'compact' && v.durationSec > 1680) return false; // > 28 Min. herausfiltern bei Kompakt-Präferenz
         if (lengthPref === 'medium' && v.durationSec > 2700) return false;
         return true;
       });
 
     if (candidates.length === 0) {
-      setDiscoverStatus('Treffer waren entweder unter 4 Minuten oder deutlich länger als dein gewähltes Dichte-Zeitfenster. Probiere „Strukturiert (15–35 Min.)“.');
+      setDiscoverStatus('Treffer waren entweder unter 4 Minuten, länger als dein Zeitfenster oder enthielten KI-Sprecher-Signale. Probiere einen anderen Begriff oder „Strukturiert (15–35 Min.)“.');
       return;
     }
 
     if (hasGemini) {
-      setDiscoverStatus('⏳ <strong>Schritt 3/3:</strong> Gemini prüft Informationsdichte &amp; filtert Clickbait aus…');
+      setDiscoverStatus('⏳ <strong>Schritt 3/3:</strong> Gemini prüft Informationsdichte, menschliche Authentizität &amp; filtert KI-Sprecher/Clickbait aus…');
       const aiScores = await scoreDiscoveryCandidatesWithGemini(topic, candidates.slice(0, 12), lengthPref);
       const scoreMap = {};
       aiScores.forEach((s) => {
@@ -2839,12 +2896,17 @@ async function runKnowledgeDiscovery() {
         .map((c) => {
           const ai = scoreMap[c.id];
           if (ai?.isClickbait) return null;
-          const densityScore = typeof ai?.densityScore === 'number' ? ai.densityScore : computeFocusScore(c);
+          if (state.filterAiSlop && ai?.isAiVoiceOrSlop) return null;
+          const baseDensity = typeof ai?.densityScore === 'number' ? ai.densityScore : computeFocusScore(c);
+          const humanScore = typeof ai?.humanAuthenticityScore === 'number' ? ai.humanAuthenticityScore : baseDensity;
+          const combinedScore = state.filterAiSlop
+            ? Math.round(baseDensity * 0.6 + humanScore * 0.4) - detectAiVoiceSignals(c).suspicionScore
+            : baseDensity;
           return {
             ...c,
-            aiDensityScore: densityScore,
-            focusScore: densityScore,
-            densityTag: ai?.densityTag || `Dichte ${densityScore}`,
+            aiDensityScore: Math.max(0, combinedScore),
+            focusScore: Math.max(0, combinedScore),
+            densityTag: ai?.densityTag || `Dichte ${baseDensity}`,
             whyRecommended: ai?.reason || 'Durch Gemini-Informationsdichte-Filter ausgewählt.'
           };
         })
@@ -3024,6 +3086,7 @@ function bindEvents() {
   els.toggleCalmTitles.checked = state.calmTitles;
   els.toggleCalmThumbs.checked = state.calmThumbnails;
   els.toggleFloodBrake.checked = state.floodBrake;
+  if (els.toggleFilterAi) els.toggleFilterAi.checked = state.filterAiSlop;
   els.toggleHideWatched.checked = state.hideWatched;
   if (els.algoDensityMode) els.algoDensityMode.value = state.densityPreference || 'dense';
   els.body.classList.toggle('calm-thumbnails', state.calmThumbnails);
@@ -3050,6 +3113,14 @@ function bindEvents() {
     saveState();
     renderVideoViews();
   });
+
+  if (els.toggleFilterAi) {
+    els.toggleFilterAi.addEventListener('change', () => {
+      state.filterAiSlop = els.toggleFilterAi.checked;
+      saveState();
+      renderVideoViews();
+    });
+  }
 
   els.toggleHideWatched.addEventListener('change', () => {
     state.hideWatched = els.toggleHideWatched.checked;
