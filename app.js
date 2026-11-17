@@ -2658,10 +2658,10 @@ async function generateDiscoveryQueriesWithGemini(topic, lengthPref, langPref) {
     langPref === 'de' ? 'nur deutsche Suchbegriffe' : langPref === 'en' ? 'nur englische Suchbegriffe' : '1 deutscher und 1–2 englische Suchbegriffe';
 
   const prompt = [
-    `Erstelle 2 bis 3 präzise YouTube-Suchanfragen zum Lern-Thema: "${topic}".`,
-    `Ziel: ${lengthHint} von ECHTEN menschlichen Experten, Vortragenden oder etablierten Fachkanälen (kein KI-Sprecher, keine automatisierten Faceless-AI-Zusammenfassungen, kein Clickbait).`,
+    `Erstelle 2 bis 3 präzise YouTube-Suchanfragen zum Thema: "${topic}".`,
+    `Ziel: Ein guter Mix aus spannenden, gerne auch unterhaltsam erzählten Wissensvideos, Video-Essays, visuellen Erklärungen und fundierten Analysen (${lengthHint}) von ECHTEN menschlichen Creatorn — also nicht nur trockene Vorlesungen, aber ohne KI-Sprecher/Faceless-AI und ohne leeres Clickbait.`,
     `Sprache: ${langHint}.`,
-    'Vermeide Begriffe wie "schnell reich", "krass", "reagiert", "top 10", "podcast clips", "everything you need to know". Nutze Fachbegriffe oder Formate wie "lecture", "talk", "interview", "case study", "vortrag", "analyse", "mechanisms".',
+    'Vermeide Begriffe wie "schnell reich", "krass", "reagiert", "top 10", "podcast clips", "everything you need to know". Nutze je nach Thema Suchbegriffe, die sowohl lebendige Creator/Essays (z. B. "story", "explained", "how", "doku", "deep dive") als auch konkrete Mechanismen/Fallbeispiele abdecken.',
     'Antworte ausschließlich als JSON-Objekt: {"queries": ["...", "..."], "focusAngle": "kurzer Satz was geprüft wird"}'
   ].join('\n');
 
@@ -2691,15 +2691,17 @@ async function scoreDiscoveryCandidatesWithGemini(topic, candidates, lengthPref)
       : 'Der Nutzer schätzt strukturierte Erklärungen mit hoher Informationsdichte pro Minute.';
 
   const prompt = [
-    `Bewerte diese realen YouTube-Videos für das Lernziel "${topic}".`,
+    `Bewerte diese realen YouTube-Videos für das Thema "${topic}".`,
     lengthPreferenceText,
+    'GUTER MIX STATT NUR TROCKENE VORTRÄGE:',
+    '- Videos dürfen ausdrücklich unterhaltsam, gut geschnitten, witzig oder stark erzählt sein (gutes Storytelling / Edutainment), SOLANGE ein echter Mehrwert und konkretes Wissen hängen bleiben.',
+    '- Bevorzuge einen ausgewogenen Mix aus mitreißenden Video-Essays, Praxisbeispielen und tiefen Analysen — nicht bloß akademische Frontalvorträge.',
     'EXTREM WICHTIG — KI-SPRECHER & FACELESS-AI AUSSORTIEREN:',
     '- Der Nutzer HASST Videos mit KI-Sprecher / Text-to-Speech (z. B. ElevenLabs, NotebookLM, Synthesia, InVideo) oder automatisierte Faceless-AI-Massenware — selbst dann, wenn das Video faktisch dicht klingt oder viele Kapitel hat!',
     '- Setze isAiVoiceOrSlop: true bei jedem Video, dessen Titel, Kanalname, Tags oder Beschreibung nach KI-Sprecher, generischer AI-Zusammenfassung, Content-Farm oder fehlender menschlicher Autorenschaft aussieht.',
-    '- Bevorzuge klar echte menschliche Sprecher, Vorträge, Interviews, Hochschulen, Fachjournalisten oder nachvollziehbare Creator mit echter Quellen-/Autorenangabe.',
-    '- Sortiere außerdem Clickbait, oberflächliches Infotainment, Verkaufs-Funnels und unnötig gestreckte Laber-Videos konsequent aus (isClickbait: true).',
+    '- Sortiere außerdem hohles Clickbait ohne Substanz, reine Verkaufs-Funnels und unnötig gestreckte Laber-Videos aus (isClickbait: true).',
     'Antworte ausschließlich als JSON-Array mit einem Objekt pro Video-ID:',
-    '[{"id": "...", "densityScore": 0-99, "humanAuthenticityScore": 0-99, "isClickbait": true|false, "isAiVoiceOrSlop": true|false, "densityTag": "z.B. Hohe Dichte · 14 Min.", "reason": "1 ruhiger deutscher Satz, welches konkrete Wissen vermittelt wird und warum es authentisch wirkt"}]',
+    '[{"id": "...", "densityScore": 0-99, "humanAuthenticityScore": 0-99, "isClickbait": true|false, "isAiVoiceOrSlop": true|false, "densityTag": "z.B. Stark erzählt · 14 Min.", "reason": "1 ruhiger deutscher Satz, was man mitnimmt und warum der Stil passt"}]',
     '',
     JSON.stringify(compactList)
   ].join('\n');
@@ -2755,7 +2757,7 @@ async function runKnowledgeDiscovery() {
     return;
   }
 
-  const cacheKey = `${topic.toLowerCase()}|${lengthPref}|${langPref}|${hasGemini ? 'ai' : 'noai'}|${state.filterAiSlop ? 'noai_voice_v2' : 'all_v2'}`;
+  const cacheKey = `${topic.toLowerCase()}|${lengthPref}|${langPref}|${hasGemini ? 'ai' : 'noai'}|${state.filterAiSlop ? 'noai_voice_v3' : 'all_v3'}`;
   const cached = state.discoveryCache?.[cacheKey];
   if (cached && Date.now() - cached.ts < 12 * 60 * 60 * 1000) {
     state.discoveryResults = cached.results;
