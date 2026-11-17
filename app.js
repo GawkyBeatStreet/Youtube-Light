@@ -151,8 +151,10 @@ function loadState() {
     blockedDiscoveryChannels: [],
     budgets: {
       learningGoalMin: 45,
-      entertainmentLimitMin: 20
+      entertainmentLimitMin: 30
     },
+    entertainmentLimit30V1: true,
+    entertainmentGrace: null,
     realStatsV1: true,
     lastFeedSyncAt: 0,
     dailyLogs: prepareDailyLogs({}, true),
@@ -178,6 +180,10 @@ function loadState() {
     const parsed = JSON.parse(raw);
     const mergedApiConfig = { ...fallback.apiConfig, ...(parsed.apiConfig || {}) };
     mergedApiConfig.geminiModel = normalizeGeminiModel(mergedApiConfig.geminiModel);
+    const mergedBudgets = { ...fallback.budgets, ...(parsed.budgets || {}) };
+    if (!parsed.entertainmentLimit30V1 && mergedBudgets.entertainmentLimitMin === 20) {
+      mergedBudgets.entertainmentLimitMin = 30;
+    }
     return {
       ...fallback,
       ...parsed,
@@ -187,7 +193,10 @@ function loadState() {
       playbackProgress:
         parsed.playbackProgress && typeof parsed.playbackProgress === 'object' ? parsed.playbackProgress : {},
       blockedShorts: Array.isArray(parsed.blockedShorts) ? parsed.blockedShorts : [],
-      budgets: { ...fallback.budgets, ...(parsed.budgets || {}) },
+      budgets: mergedBudgets,
+      entertainmentLimit30V1: true,
+      entertainmentGrace:
+        parsed.entertainmentGrace && parsed.entertainmentGrace.dateKey === getDateKey() ? parsed.entertainmentGrace : null,
       obsidianConfig: { ...fallback.obsidianConfig, ...(parsed.obsidianConfig || {}) },
       playerPrefs: { ...fallback.playerPrefs, ...(parsed.playerPrefs || {}) },
       apiConfig: mergedApiConfig,
@@ -231,6 +240,9 @@ let obsidianDirHandle = null;
 // --- DOM REFERENZEN ---
 const els = {
   body: document.body,
+  btnBrandHome: document.getElementById('btn-brand-home'),
+  globalSearchForm: document.getElementById('global-search-form'),
+  globalSearchInput: document.getElementById('global-search-input'),
   btnModeLearning: document.getElementById('btn-mode-learning'),
   btnModeEntertainment: document.getElementById('btn-mode-entertainment'),
   liveTimerPill: document.getElementById('live-timer-pill'),
@@ -243,6 +255,7 @@ const els = {
   toggleFloodBrake: document.getElementById('toggle-flood-brake'),
   toggleHideWatched: document.getElementById('toggle-hide-watched'),
   learningGoalsChips: document.getElementById('learning-goals-chips'),
+  btnToggleAddGoal: document.getElementById('btn-toggle-add-goal'),
   btnResetGoals: document.getElementById('btn-reset-goals'),
   formAddGoal: document.getElementById('form-add-goal'),
   inputNewGoal: document.getElementById('input-new-goal'),
@@ -250,6 +263,8 @@ const els = {
   algoDensityMode: document.getElementById('algo-density-mode'),
   algoDurationFilter: document.getElementById('algo-duration-filter'),
   btnRefreshAlgo: document.getElementById('btn-refresh-algo'),
+  continueWatchingSection: document.getElementById('continue-watching-section'),
+  continueWatchingGrid: document.getElementById('continue-watching-grid'),
   algorithmVideoGrid: document.getElementById('algorithm-video-grid'),
   entertainmentLockNotice: document.getElementById('entertainment-lock-notice'),
   // Wissens-Entdecker
@@ -270,8 +285,6 @@ const els = {
   btnRefreshFeed: document.getElementById('btn-refresh-feed'),
   feedSyncMeta: document.getElementById('feed-sync-meta'),
   feedModeDescription: document.getElementById('feed-mode-description'),
-  statBlockedShorts: document.getElementById('stat-blocked-shorts'),
-  statLearningCount: document.getElementById('stat-learning-count'),
   // Player Workspace
   playerWorkspace: document.getElementById('player-workspace'),
   playerStage: document.getElementById('player-stage'),
@@ -281,6 +294,7 @@ const els = {
   overlayBadge: document.getElementById('overlay-badge'),
   overlayHeading: document.getElementById('overlay-heading'),
   overlaySubtext: document.getElementById('overlay-subtext'),
+  overlayNoteBox: document.getElementById('overlay-note-box'),
   overlayQuickNote: document.getElementById('overlay-quick-note'),
   btnOverlaySaveNote: document.getElementById('btn-overlay-save-note'),
   btnOverlayResume: document.getElementById('btn-overlay-resume'),
@@ -514,7 +528,7 @@ function computeFocusScore(video) {
 }
 
 function getFilteredVideos({ applyFloodBrake = true, sortByScore = true, channelFilter = 'all' } = {}) {
-  const query = (els.algoSearchInput?.value || '').trim().toLowerCase();
+  const query = ((els.globalSearchInput?.value || els.algoSearchInput?.value) || '').trim().toLowerCase();
   const durationFilter = els.algoDurationFilter?.value || 'all';
 
   let list = state.videos
@@ -570,11 +584,25 @@ function getFilteredVideos({ applyFloodBrake = true, sortByScore = true, channel
   return list;
 }
 
-function isEntertainmentLocked() {
+function getGraceVideoIdForToday() {
+  const today = getDateKey();
+  if (state.entertainmentGrace && state.entertainmentGrace.dateKey === today) {
+    return state.entertainmentGrace.videoId || null;
+  }
+  return null;
+}
+
+function isEntertainmentUsedUpFor(candidateVideoId = null) {
   const today = getDateKey();
   const used = state.dailyLogs[today]?.entertainmentSec || 0;
   const limit = state.budgets.entertainmentLimitMin * 60;
-  return state.mode === 'entertainment' && used >= limit;
+  if (used < limit) return false;
+  if (candidateVideoId && candidateVideoId === getGraceVideoIdForToday()) return false;
+  return true;
+}
+
+function isEntertainmentLocked() {
+  return state.mode === 'entertainment' && isEntertainmentUsedUpFor(activeVideoId);
 }
 
 // --- LIVE TIMER & BUDGET LOGIK ---
@@ -583,28 +611,35 @@ function updateTimerUI() {
   const log = state.dailyLogs[today] || { learningSec: 0, entertainmentSec: 0 };
   const isRunning = isVideoPlaying || manualTimerActive;
 
-  els.liveTimerPill.classList.remove('learning', 'entertainment', 'running', 'expired');
-  els.liveTimerPill.classList.add(state.mode);
-  if (isRunning) els.liveTimerPill.classList.add('running');
+  if (els.liveTimerPill) {
+    els.liveTimerPill.classList.remove('learning', 'entertainment', 'running', 'expired');
+    els.liveTimerPill.classList.add(state.mode);
+    if (isRunning) els.liveTimerPill.classList.add('running');
 
-  if (state.mode === 'learning') {
-    const goalSec = state.budgets.learningGoalMin * 60;
-    els.timerPillText.textContent = `Lernzeit heute: ${formatMMSS(log.learningSec)} / ${formatMMSS(goalSec)} Ziel`;
-  } else {
-    const limitSec = state.budgets.entertainmentLimitMin * 60;
-    const remaining = Math.max(0, limitSec - log.entertainmentSec);
-    els.timerPillText.textContent = `Unterhaltungs-Budget: ${formatMMSS(remaining)} verbleibend`;
-    if (remaining === 0) {
-      els.liveTimerPill.classList.add('expired');
+    if (state.mode === 'learning') {
+      const goalSec = state.budgets.learningGoalMin * 60;
+      els.timerPillText.textContent = `Lernzeit heute: ${formatMMSS(log.learningSec)} / ${formatMMSS(goalSec)} Ziel`;
+    } else {
+      const limitSec = state.budgets.entertainmentLimitMin * 60;
+      const remaining = Math.max(0, limitSec - log.entertainmentSec);
+      els.timerPillText.textContent =
+        remaining > 0
+          ? `Unterhaltung heute: ${formatMMSS(remaining)} verbleibend`
+          : `Unterhaltungs-Limit (${state.budgets.entertainmentLimitMin} Min.) erreicht`;
+      if (remaining === 0) {
+        els.liveTimerPill.classList.add('expired');
+      }
     }
   }
 
-  if (manualTimerActive) {
-    els.timerStateBadge.textContent = 'Läuft';
-  } else if (isVideoPlaying) {
-    els.timerStateBadge.textContent = 'Video';
-  } else {
-    els.timerStateBadge.textContent = 'Pause';
+  if (els.timerStateBadge) {
+    if (manualTimerActive) {
+      els.timerStateBadge.textContent = 'Läuft';
+    } else if (isVideoPlaying) {
+      els.timerStateBadge.textContent = 'Video';
+    } else {
+      els.timerStateBadge.textContent = 'Pause';
+    }
   }
 
   if (els.btnDashTimerToggle) {
@@ -628,16 +663,13 @@ setInterval(() => {
     state.dailyLogs[today].entertainmentSec += 1;
     const limitSec = state.budgets.entertainmentLimitMin * 60;
     if (state.dailyLogs[today].entertainmentSec >= limitSec) {
-      manualTimerActive = false;
-      if (ytPlayer && isVideoPlaying) {
-        try {
-          ytPlayer.pauseVideo();
-        } catch {
-          // Player evtl. nicht bereit
-        }
+      const graceId = getGraceVideoIdForToday();
+      const finishingGraceVideo = isVideoPlaying && activeVideoId && activeVideoId === graceId;
+      if (!finishingGraceVideo) {
+        manualTimerActive = false;
+        state.entertainmentGrace = null;
+        renderAllViews();
       }
-      isVideoPlaying = false;
-      renderAllViews();
     }
   }
 
@@ -946,11 +978,7 @@ function handlePlayerStateChange(event) {
     saveActiveVideoProgress(true);
     updateTimerUI();
     if (!endScreenTriggered) {
-      showFocusOverlay(
-        'pause',
-        'Kurze Lern-Reflexion',
-        'Kein Weiterklicken in den Algorithmus. Notiere deinen wichtigsten Gedanken oder setze das Video gezielt fort.'
-      );
+      showFocusOverlay('pause', 'Pausiert', '');
     }
   } else if (event.data === YTState.ENDED) {
     isVideoPlaying = false;
@@ -958,24 +986,37 @@ function handlePlayerStateChange(event) {
     els.ctrlPlayPause.textContent = '▶ Play';
     stopScrubberPoll();
     clearControlsHideTimer();
+    if (activeVideoId === getGraceVideoIdForToday()) {
+      const today = getDateKey();
+      const used = state.dailyLogs[today]?.entertainmentSec || 0;
+      if (used >= state.budgets.entertainmentLimitMin * 60) {
+        state.entertainmentGrace = null;
+      }
+    }
     clearPlaybackProgress(activeVideoId);
     markVideoWatched(activeVideoId, true);
     showFocusOverlay(
       'ended',
-      'Video abgeschlossen — Was nimmst du mit?',
-      'YouTube-Endscreen-Vorschläge wurden abgefangen. Halte deine Kern-Erkenntnis fest oder kehre bewusst zur Übersicht zurück.'
+      'Video beendet',
+      'Notiz speichern oder direkt zurück zur Startseite.'
     );
     updateTimerUI();
   }
 }
 
 function showFocusOverlay(mode, heading, subtext) {
-  els.overlayBadge.textContent =
-    mode === 'ended'
-      ? '✅ Video abgeschlossen — Endscreen-Vorschläge abgefangen'
-      : '⏸️ Fokus-Pause — YouTube-Vorschläge blockiert';
+  const isPause = mode === 'pause';
+  els.focusOverlay.classList.toggle('pause-minimal', isPause);
+  if (els.overlayBadge) {
+    els.overlayBadge.classList.toggle('hidden', isPause);
+    els.overlayBadge.textContent = '✓ Video beendet';
+  }
+  if (els.overlayNoteBox) {
+    els.overlayNoteBox.classList.toggle('hidden', isPause);
+  }
   els.overlayHeading.textContent = heading;
-  els.overlaySubtext.textContent = subtext;
+  els.overlaySubtext.textContent = subtext || '';
+  els.overlaySubtext.classList.toggle('hidden', !subtext);
   els.focusOverlay.classList.remove('hidden');
 }
 
@@ -1015,11 +1056,18 @@ function startScrubberPoll() {
       }
       clearControlsHideTimer();
       clearPlaybackProgress(activeVideoId);
+      if (activeVideoId === getGraceVideoIdForToday()) {
+        const today = getDateKey();
+        const used = state.dailyLogs[today]?.entertainmentSec || 0;
+        if (used >= state.budgets.entertainmentLimitMin * 60) {
+          state.entertainmentGrace = null;
+        }
+      }
       markVideoWatched(activeVideoId, true);
       showFocusOverlay(
         'ended',
-        'Video abgeschlossen — Was nimmst du mit?',
-        'Kurz vor Schluss abgefangen: Keine YouTube-Empfehlungen im Player. Notiere deine Erkenntnis oder kehre zurück.'
+        'Video beendet',
+        'Notiz speichern oder direkt zurück zur Startseite.'
       );
       updateTimerUI();
     }
@@ -1054,9 +1102,22 @@ function openVideoInWorkspace(videoId) {
   }
 
   const effectiveCat = video.isDiscovery ? 'learning' : getChannelCategory(video.channelHandle);
-  if (effectiveCat === 'entertainment' && isEntertainmentLocked()) {
-    alert('Dein heutiges Unterhaltungs-Budget ist aufgebraucht. Wechsle in den Lern-Modus oder passe das Limit im Wochen-Dashboard an.');
-    return;
+  if (effectiveCat === 'entertainment') {
+    if (isEntertainmentUsedUpFor(video.id)) {
+      alert(
+        `Dein Unterhaltungs-Limit (${state.budgets.entertainmentLimitMin} Min.) ist für heute erreicht. Neue Unterhaltungsvideos sind bis morgen gesperrt — du kannst jederzeit weiter im Lern-Modus schauen.`
+      );
+      return;
+    }
+    state.entertainmentGrace = { dateKey: getDateKey(), videoId: video.id };
+    saveState();
+  } else {
+    const today = getDateKey();
+    const used = state.dailyLogs[today]?.entertainmentSec || 0;
+    if (used >= state.budgets.entertainmentLimitMin * 60) {
+      state.entertainmentGrace = null;
+      saveState();
+    }
   }
 
   // Falls Nutzer direkt aus dem Abo-Manager o. ä. ein Video eines anderen Modus öffnet, Modus angleichen
@@ -1113,6 +1174,14 @@ function closePlayerWorkspace() {
   hideFocusOverlay();
   els.playerWorkspace.classList.add('hidden');
   activeVideoId = null;
+
+  const today = getDateKey();
+  const used = state.dailyLogs[today]?.entertainmentSec || 0;
+  if (used >= state.budgets.entertainmentLimitMin * 60) {
+    state.entertainmentGrace = null;
+    saveState();
+  }
+
   updateTimerUI();
   renderVideoViews();
   renderDiscoveryResults();
@@ -1428,29 +1497,27 @@ function renderLearningGoals() {
   });
 }
 
-function createVideoCardHtml(video, showFocusScore = true) {
+function createVideoCardHtml(video) {
   const isWatched = state.watchedIds.includes(video.id);
   const title = getDisplayTitle(video);
-  const cat = video.effectiveCategory || getChannelCategory(video.channelHandle);
   const thumbUrl = video.thumbnail || `https://i.ytimg.com/vi/${encodeURIComponent(video.id)}/hqdefault.jpg`;
 
   return `
     <article class="video-card ${isWatched ? 'watched' : ''}" data-video-id="${escapeHtml(video.id)}">
       <div class="video-thumb" data-play-video="${escapeHtml(video.id)}">
         <img src="${thumbUrl}" alt="${escapeHtml(title)}" loading="lazy" />
-        ${showFocusScore ? `<span class="score-badge">Focus ${video.focusScore}</span>` : ''}
         <span class="duration-badge">${escapeHtml(video.durationText || formatMMSS(video.durationSec))}</span>
         ${!isWatched ? renderThumbProgressHtml(video) : ''}
       </div>
       <div class="video-body">
-        <div class="video-meta-top">
-          <span class="category-badge ${cat}">${cat === 'learning' ? '🎓 Lernen' : '🍿 Unterhaltung'}</span>
-          <span>${escapeHtml(video.topic)}</span>
-        </div>
         <h3 class="video-title" data-play-video="${escapeHtml(video.id)}">${escapeHtml(title)}</h3>
-        <p class="video-reason">${escapeHtml(video.whyRecommended || 'Aus deinen abonnierten Kanälen')}</p>
         <div class="video-footer">
-          <span><strong>${escapeHtml(video.channelName)}</strong> · ${escapeHtml(video.publishedText || '')}</span>
+          <span>
+            <button type="button" class="video-channel-link" data-filter-channel="${escapeHtml(video.channelHandle)}" title="Videos dieses Kanals anzeigen">
+              ${escapeHtml(video.channelName)}
+            </button>
+            · ${escapeHtml(video.topic)}${video.publishedText ? ` · ${escapeHtml(video.publishedText)}` : ''}
+          </span>
           <button class="btn-link" data-mark-watched="${escapeHtml(video.id)}">
             ${isWatched ? '✓ Gesehen' : 'Als gesehen'}
           </button>
@@ -1468,6 +1535,23 @@ function attachVideoCardHandlers(container) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       markVideoWatched(btn.dataset.markWatched);
+    });
+  });
+  container.querySelectorAll('[data-filter-channel]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const handle = btn.dataset.filterChannel;
+      if (!handle) return;
+      const chCat = getChannelCategory(handle);
+      if (chCat === 'learning' || chCat === 'entertainment') {
+        if (state.mode !== chCat) setMode(chCat);
+      }
+      renderFeedChannelFilter();
+      if (els.feedChannelFilter) {
+        els.feedChannelFilter.value = handle;
+      }
+      setTab('feed');
+      renderVideoViews();
     });
   });
 }
@@ -1494,22 +1578,46 @@ function bindLockHandlers(container) {
 function renderVideoViews() {
   const locked = isEntertainmentLocked();
 
-  // 1. Algorithmus-Grid
+  // 1. Startseite (Weiterschauen + Haupt-Grid)
   if (locked) {
     els.entertainmentLockNotice.innerHTML = renderLockNoticeHtml();
     els.entertainmentLockNotice.classList.remove('hidden');
     bindLockHandlers(els.entertainmentLockNotice);
+    if (els.continueWatchingSection) els.continueWatchingSection.classList.add('hidden');
     els.algorithmVideoGrid.innerHTML = '';
   } else {
     els.entertainmentLockNotice.classList.add('hidden');
-    const algoVideos = getFilteredVideos({ applyFloodBrake: true, sortByScore: true });
-    els.statLearningCount.textContent = String(algoVideos.length);
-    els.statBlockedShorts.textContent = String((state.blockedShorts || []).length);
+    const query = ((els.globalSearchInput?.value || els.algoSearchInput?.value) || '').trim();
+    const inProgress = !query
+      ? state.videos
+          .filter((v) => {
+            const cat = getChannelCategory(v.channelHandle);
+            return cat === state.mode && getResumeSeconds(v.id, v.durationSec) > 0;
+          })
+          .sort((a, b) => (state.playbackProgress?.[b.id]?.updatedAt || 0) - (state.playbackProgress?.[a.id]?.updatedAt || 0))
+          .slice(0, 4)
+      : [];
 
-    if (algoVideos.length === 0) {
-      els.algorithmVideoGrid.innerHTML = `<div class="panel-card"><h3>Keine Treffer für diesen Filter</h3><p class="panel-hint">Passe deine Lernziele, Suche oder Videolänge an.</p></div>`;
+    if (els.continueWatchingSection && els.continueWatchingGrid) {
+      if (inProgress.length > 0) {
+        els.continueWatchingSection.classList.remove('hidden');
+        els.continueWatchingGrid.innerHTML = inProgress.map((v) => createVideoCardHtml(v)).join('');
+        attachVideoCardHandlers(els.continueWatchingGrid);
+      } else {
+        els.continueWatchingSection.classList.add('hidden');
+        els.continueWatchingGrid.innerHTML = '';
+      }
+    }
+
+    const inProgressIds = new Set(inProgress.map((v) => v.id));
+    const algoVideos = getFilteredVideos({ applyFloodBrake: true, sortByScore: true }).filter(
+      (v) => !inProgressIds.has(v.id)
+    );
+
+    if (algoVideos.length === 0 && inProgress.length === 0) {
+      els.algorithmVideoGrid.innerHTML = `<div class="panel-card"><h3>Keine Treffer</h3><p class="panel-hint">Passe Interessen, Suche oder Filter an — oder drücke oben Enter, um auf YouTube danach zu suchen.</p></div>`;
     } else {
-      els.algorithmVideoGrid.innerHTML = algoVideos.map((v) => createVideoCardHtml(v, true)).join('');
+      els.algorithmVideoGrid.innerHTML = algoVideos.map((v) => createVideoCardHtml(v)).join('');
       attachVideoCardHandlers(els.algorithmVideoGrid);
     }
   }
@@ -2796,8 +2904,8 @@ function extractYoutubeIdFromUrl(raw = '') {
   return null;
 }
 
-async function openDirectYoutubeUrl() {
-  const raw = (els.discoverDirectUrl?.value || '').trim();
+async function openDirectYoutubeUrl(overrideUrl = null) {
+  const raw = (overrideUrl !== null ? String(overrideUrl) : els.discoverDirectUrl?.value || '').trim();
   const vidId = extractYoutubeIdFromUrl(raw);
   if (!vidId) {
     setDiscoverStatus('Bitte einen gültigen YouTube-Link (youtube.com/watch?v=… oder youtu.be/…) einfügen.');
@@ -2859,6 +2967,40 @@ async function openDirectYoutubeUrl() {
 
 // --- EVENT LISTENER & INITIALISIERUNG ---
 function bindEvents() {
+  if (els.btnBrandHome) {
+    els.btnBrandHome.addEventListener('click', () => {
+      if (activeVideoId) closePlayerWorkspace();
+      if (els.globalSearchInput) els.globalSearchInput.value = '';
+      if (els.algoSearchInput) els.algoSearchInput.value = '';
+      setTab('algorithm');
+      renderVideoViews();
+    });
+  }
+
+  if (els.globalSearchInput) {
+    els.globalSearchInput.addEventListener('input', () => {
+      if (els.algoSearchInput) els.algoSearchInput.value = els.globalSearchInput.value;
+      renderVideoViews();
+    });
+  }
+
+  if (els.globalSearchForm) {
+    els.globalSearchForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const q = (els.globalSearchInput?.value || '').trim();
+      if (!q) return;
+      if (extractYoutubeIdFromUrl(q)) {
+        await openDirectYoutubeUrl(q);
+        els.globalSearchInput.value = '';
+        if (els.algoSearchInput) els.algoSearchInput.value = '';
+        return;
+      }
+      if (els.discoverQueryInput) els.discoverQueryInput.value = q;
+      setTab('discover');
+      runKnowledgeDiscovery();
+    });
+  }
+
   els.btnModeLearning.addEventListener('click', () => setMode('learning'));
   els.btnModeEntertainment.addEventListener('click', () => setMode('entertainment'));
 
@@ -2875,8 +3017,8 @@ function bindEvents() {
     manualTimerActive = !manualTimerActive;
     updateTimerUI();
   };
-  els.liveTimerPill.addEventListener('click', toggleManualTimer);
-  els.btnDashTimerToggle.addEventListener('click', toggleManualTimer);
+  if (els.liveTimerPill) els.liveTimerPill.addEventListener('click', toggleManualTimer);
+  if (els.btnDashTimerToggle) els.btnDashTimerToggle.addEventListener('click', toggleManualTimer);
 
   // Anti-Dopamin Quick-Toggles
   els.toggleCalmTitles.checked = state.calmTitles;
@@ -2923,6 +3065,13 @@ function bindEvents() {
     renderVideoViews();
   });
 
+  if (els.btnToggleAddGoal && els.formAddGoal) {
+    els.btnToggleAddGoal.addEventListener('click', () => {
+      const hidden = els.formAddGoal.classList.toggle('hidden');
+      if (!hidden && els.inputNewGoal) els.inputNewGoal.focus();
+    });
+  }
+
   if (els.formAddGoal) {
     els.formAddGoal.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -2930,6 +3079,7 @@ function bindEvents() {
       if (!raw) return;
       if (addCustomGoal(raw)) {
         els.inputNewGoal.value = '';
+        els.formAddGoal.classList.add('hidden');
         renderLearningGoals();
         renderDiscoverGoalPills();
         renderGoalTopicsDatalist();
@@ -2976,7 +3126,7 @@ function bindEvents() {
     });
   }
   if (els.btnOpenDirectUrl) {
-    els.btnOpenDirectUrl.addEventListener('click', openDirectYoutubeUrl);
+    els.btnOpenDirectUrl.addEventListener('click', () => openDirectYoutubeUrl());
   }
 
   // Player & Schutzschild Controls
@@ -3141,7 +3291,7 @@ function bindEvents() {
   // Budgets speichern
   els.btnSaveBudgets.addEventListener('click', () => {
     const lMin = Math.max(5, parseInt(els.inputLearningGoal.value || '45', 10));
-    const eMin = Math.max(0, parseInt(els.inputEntertainmentLimit.value || '20', 10));
+    const eMin = Math.max(0, parseInt(els.inputEntertainmentLimit.value || '30', 10));
     state.budgets = { learningGoalMin: lMin, entertainmentLimitMin: eMin };
     saveState();
     updateTimerUI();

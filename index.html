@@ -8,69 +8,54 @@
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body class="calm-thumbnails mode-learning">
-  <!-- TOP-BAR / FOKUS-COCKPIT -->
+  <!-- YOUTUBE-STYLE HEADER -->
   <header class="topbar">
     <div class="topbar-inner">
-      <div class="brand">
+      <button type="button" id="btn-brand-home" class="brand brand-btn" title="Zur Startseite">
         <div class="brand-mark" aria-hidden="true">FT</div>
-        <div>
+        <div class="brand-text">
           <div class="brand-title">FocusTube</div>
-          <div class="brand-subtitle" id="user-handle-label">Wissens-Workspace für @henningp.8303</div>
+          <div class="brand-subtitle" id="user-handle-label">@henningp.8303</div>
         </div>
-      </div>
+      </button>
 
-      <!-- Zentraler Modus-Umschalter -->
-      <div class="mode-switcher" role="group" aria-label="Modus wählen">
-        <button id="btn-mode-learning" class="mode-btn active" data-mode="learning">
-          <span>🎓 Lernen</span>
-          <small>Wissen &amp; Skills</small>
-        </button>
-        <button id="btn-mode-entertainment" class="mode-btn" data-mode="entertainment">
-          <span>🍿 Unterhaltung</span>
-          <small>Zeitbudget</small>
-        </button>
-      </div>
+      <form id="global-search-form" class="header-search-form" role="search">
+        <input
+          type="search"
+          id="global-search-input"
+          class="header-search-input"
+          placeholder="Suchen oder YouTube-Link einfügen…"
+          aria-label="Videos suchen oder YouTube-Link öffnen"
+        />
+        <button type="submit" class="header-search-btn" title="Auf YouTube entdecken oder Link öffnen">🔎</button>
+      </form>
 
-      <!-- Rechte Cockpit-Steuerung -->
       <div class="cockpit-right">
-        <button id="live-timer-pill" class="timer-pill learning" title="Klicken, um Timer manuell für eine externe Lerneinheit zu starten/pausieren">
-          <span class="timer-dot" id="timer-dot"></span>
-          <span id="timer-pill-text">Lernzeit heute: 00:00 / 45:00 Ziel</span>
-          <span class="timer-state-badge" id="timer-state-badge">Auto</span>
-        </button>
+        <div class="mode-switcher" role="group" aria-label="Modus wählen">
+          <button id="btn-mode-learning" class="mode-btn active" data-mode="learning">
+            <span>🎓 Lernen</span>
+          </button>
+          <button id="btn-mode-entertainment" class="mode-btn" data-mode="entertainment">
+            <span>🍿 Unterhaltung</span>
+          </button>
+        </div>
 
-        <button id="btn-open-sync" class="btn btn-secondary">
-          <span>🔗 Sync, Gemini &amp; Obsidian</span>
+        <button id="btn-open-sync" class="btn btn-secondary" title="YouTube Sync, Gemini, Obsidian & Filter">
+          <span>⚙ Sync &amp; Filter</span>
           <span id="sync-status-dot" class="status-indicator offline"></span>
         </button>
       </div>
     </div>
 
-    <!-- Anti-Dopamin Quick-Toggles & Haupt-Navigation -->
     <div class="subbar">
       <nav class="main-nav" aria-label="Hauptbereiche">
-        <button class="nav-tab active" data-tab="algorithm">🧭 Wissens-Algorithmus</button>
-        <button class="nav-tab" data-tab="discover">🔭 Wissens-Entdecker</button>
-        <button class="nav-tab" data-tab="feed">📺 Abo-Feed</button>
-        <button class="nav-tab" data-tab="dashboard">📊 Wochen-Dashboard &amp; Timer</button>
-        <button class="nav-tab" data-tab="channels">🗂️ Abo-Manager</button>
-        <button class="nav-tab" data-tab="notes">📝 Meine Lern-Notizen <span id="notes-count-badge" class="pill-count">0</span></button>
+        <button class="nav-tab active" data-tab="algorithm">🏠 Startseite</button>
+        <button class="nav-tab" data-tab="feed">📺 Abos</button>
+        <button class="nav-tab" data-tab="discover">🔭 Entdecken</button>
+        <button class="nav-tab" data-tab="notes">📝 Notizen <span id="notes-count-badge" class="pill-count">0</span></button>
+        <button class="nav-tab" data-tab="dashboard">📊 Dashboard</button>
+        <button class="nav-tab" data-tab="channels">🗂️ Kanäle</button>
       </nav>
-
-      <div class="quick-toggles">
-        <label class="toggle-chip" title="Entfernt Emojis, GROSSBUCHSTABEN und Clickbait aus Videotiteln">
-          <input type="checkbox" id="toggle-calm-titles" checked />
-          <span>Ruhige Titel</span>
-        </label>
-        <label class="toggle-chip" title="Zeigt Thumbnails entsättigt in Graustufen bis zum Hover">
-          <input type="checkbox" id="toggle-calm-thumbs" checked />
-          <span>Graustufen-Thumbnails</span>
-        </label>
-        <label class="toggle-chip" title="Begrenzt Serien-Kanäle wie Midwest Safety oder immocation auf max. 2 Videos im Feed">
-          <input type="checkbox" id="toggle-flood-brake" checked />
-          <span>Kanal-Flut-Bremse (Max. 2/Kanal)</span>
-        </label>
-      </div>
     </div>
   </header>
 
@@ -104,25 +89,23 @@
               <!-- Transparenter Schutzschild gegen native YouTube-Overlays -->
               <div id="player-shield" class="player-shield" title="Klicken für Play/Pause (YouTube-Vorschläge sind blockiert)"></div>
 
-              <!-- FocusTube Pause- & Ende-Overlay (verdeckt 100 % der YouTube-Vorschläge!) -->
+              <!-- Dezentes Pause- & Ende-Overlay (verhindert YouTube-Vorschläge im Frame) -->
               <div id="focus-overlay" class="focus-overlay hidden">
                 <div class="focus-overlay-card">
-                  <div class="overlay-badge" id="overlay-badge">⏸️ Fokus-Pause — YouTube-Vorschläge blockiert</div>
-                  <h3 id="overlay-heading">Kurze Lern-Reflexion</h3>
-                  <p id="overlay-subtext" class="overlay-subtext">
-                    Kein Weiterklicken in den Algorithmus. Notiere deinen wichtigsten Gedanken oder setze das Video gezielt fort.
-                  </p>
-                  <div class="overlay-note-box">
+                  <div class="overlay-badge hidden" id="overlay-badge">⏸ Pausiert</div>
+                  <h3 id="overlay-heading">Pausiert</h3>
+                  <p id="overlay-subtext" class="overlay-subtext"></p>
+                  <div class="overlay-note-box" id="overlay-note-box">
                     <input
                       type="text"
                       id="overlay-quick-note"
-                      placeholder="Erkenntnis bei diesem Zeitstempel festhalten…"
+                      placeholder="Notiz bei diesem Zeitstempel festhalten…"
                     />
-                    <button id="btn-overlay-save-note" class="btn btn-primary">Notiz speichern</button>
+                    <button id="btn-overlay-save-note" class="btn btn-secondary">Speichern</button>
                   </div>
                   <div class="overlay-actions">
-                    <button id="btn-overlay-resume" class="btn btn-primary">▶ Weiter abspielen</button>
-                    <button id="btn-overlay-back" class="btn btn-secondary">← Zurück zur Lern-Übersicht</button>
+                    <button id="btn-overlay-resume" class="btn btn-primary">▶ Weiter</button>
+                    <button id="btn-overlay-back" class="btn btn-ghost">← Zur Startseite</button>
                   </div>
                 </div>
               </div>
@@ -230,72 +213,58 @@
       </div>
     </section>
 
-    <!-- TAB 1: WISSENS-ALGORITHMUS -->
+    <!-- TAB 1: STARTSEITE (WIE YOUTUBE, NUR RUHIG) -->
     <section id="tab-algorithm" class="tab-panel active">
-      <div class="section-banner learning-banner">
-        <div>
-          <h1>Dein transparenter Wissens-Algorithmus</h1>
-          <p>
-            Kein Dopamin-Feed, keine Shorts, keine endlose Autoplay-Spirale. Wähle deine aktuellen Lernziele — FocusTube bewertet deine Abos nach Tiefe, Struktur und Themenfokus.
-          </p>
+      <div class="home-top-strip">
+        <div class="home-chips-row">
+          <div id="learning-goals-chips" class="goals-chips"></div>
+          <button type="button" id="btn-toggle-add-goal" class="goal-chip goal-chip-add" title="Neues Interesse hinzufügen">+ Interesse</button>
+          <button type="button" id="btn-reset-goals" class="btn-link">Alle</button>
         </div>
-        <div class="banner-stats">
-          <div class="mini-stat">
-            <span class="mini-stat-value" id="stat-blocked-shorts">0</span>
-            <span class="mini-stat-label">Shorts blockiert</span>
-          </div>
-          <div class="mini-stat">
-            <span class="mini-stat-value" id="stat-learning-count">0</span>
-            <span class="mini-stat-label">Fokus-Videos</span>
-          </div>
-        </div>
-      </div>
 
-      <!-- Lernziel-Auswahl -->
-      <div class="goals-bar">
-        <div class="goals-header">
-          <span>🎯 Aktive Lernziele (steuern dein Ranking):</span>
-          <button id="btn-reset-goals" class="btn-link">Alle auswählen</button>
-        </div>
-        <div id="learning-goals-chips" class="goals-chips"></div>
-        <form id="form-add-goal" class="add-goal-row">
+        <form id="form-add-goal" class="add-goal-row hidden">
           <input
             type="text"
             id="input-new-goal"
             class="search-input"
-            placeholder="Neues Interesse hinzufügen (z. B. KI-Agenten, Design, Psychologie)…"
+            placeholder="Neues Interesse (z. B. KI-Agenten, Design, Psychologie)…"
           />
-          <button type="submit" class="btn btn-secondary">+ Interesse</button>
+          <button type="submit" class="btn btn-primary">Hinzufügen</button>
         </form>
-      </div>
 
-      <!-- Such- und Informationsdichte-Filter -->
-      <div class="filter-bar">
-        <input
-          type="search"
-          id="algo-search-input"
-          class="search-input"
-          placeholder="Nach Thema, Kanal oder Stichwort filtern (z. B. Spieltheorie, Immobilien, Dopamin)…"
-        />
-        <select id="algo-density-mode" class="select-input" title="Steuert das Ranking nach Informationsdichte">
-          <option value="dense">⚡ Ranking: Hohe Informationsdichte (6–22 Min.)</option>
-          <option value="balanced">⚖️ Ranking: Ausgewogen (10–35 Min.)</option>
-          <option value="deepdive">🎓 Ranking: Ausführliche Vorträge (&gt; 25 Min.)</option>
-        </select>
-        <select id="algo-duration-filter" class="select-input">
-          <option value="all">Alle Videolängen</option>
-          <option value="compact">Kompakt &amp; Dicht (6–22 Min.)</option>
-          <option value="medium">Mittel (22–38 Min.)</option>
-          <option value="long">Lang (&gt; 38 Min.)</option>
-        </select>
-        <label class="toggle-chip">
-          <input type="checkbox" id="toggle-hide-watched" checked />
-          <span>Gesehene ausblenden</span>
-        </label>
-        <button type="button" id="btn-refresh-algo" class="btn btn-secondary" title="Neueste Videos deiner abonnierten Kanäle live abrufen">🔄 Aktualisieren</button>
+        <div class="filter-bar home-filter-bar">
+          <input
+            type="search"
+            id="algo-search-input"
+            class="search-input hidden"
+            placeholder="Startseite filtern…"
+          />
+          <select id="algo-density-mode" class="select-input" title="Sortierung der Startseite">
+            <option value="dense">⚡ Kompakt &amp; dicht (6–22 Min.)</option>
+            <option value="balanced">⚖️ Ausgewogen (10–35 Min.)</option>
+            <option value="deepdive">🎓 Längere Vorträge (&gt; 25 Min.)</option>
+          </select>
+          <select id="algo-duration-filter" class="select-input">
+            <option value="all">Alle Längen</option>
+            <option value="compact">6–22 Min.</option>
+            <option value="medium">22–38 Min.</option>
+            <option value="long">&gt; 38 Min.</option>
+          </select>
+          <label class="toggle-chip">
+            <input type="checkbox" id="toggle-hide-watched" checked />
+            <span>Gesehene ausblenden</span>
+          </label>
+          <button type="button" id="btn-refresh-algo" class="btn btn-secondary" title="Neueste Videos deiner abonnierten Kanäle live abrufen">🔄 Aktualisieren</button>
+        </div>
       </div>
 
       <div id="entertainment-lock-notice" class="lock-screen hidden"></div>
+
+      <div id="continue-watching-section" class="home-section hidden">
+        <h2 class="home-section-title">▶ Weiterschauen</h2>
+        <div id="continue-watching-grid" class="video-grid"></div>
+      </div>
+
       <div id="algorithm-video-grid" class="video-grid"></div>
     </section>
 
@@ -390,7 +359,12 @@
           <h1>Wochen-Dashboard &amp; Zeitbudget</h1>
           <p>Messbare Balance zwischen gezieltem Wissensaufbau und bewusster Unterhaltung.</p>
         </div>
-        <div class="timer-manual-controls">
+        <div class="timer-manual-controls" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <button id="live-timer-pill" class="timer-pill learning" title="Klicken, um Timer manuell zu starten/pausieren">
+            <span class="timer-dot" id="timer-dot"></span>
+            <span id="timer-pill-text">Lernzeit heute: 00:00 / 45:00 Ziel</span>
+            <span class="timer-state-badge" id="timer-state-badge">Auto</span>
+          </button>
           <button id="btn-dash-timer-toggle" class="btn btn-primary">▶ Session-Timer starten</button>
         </div>
       </div>
@@ -445,8 +419,8 @@
               <input type="number" id="input-learning-goal" min="5" max="360" value="45" />
             </label>
             <label class="form-field">
-              <span>🍿 Striktes Unterhaltungs-Tageslimit (Minuten):</span>
-              <input type="number" id="input-entertainment-limit" min="0" max="180" value="20" />
+              <span>🍿 Unterhaltungs-Tageslimit (Minuten — laufende Videos über 30 Min. laufen noch zu Ende):</span>
+              <input type="number" id="input-entertainment-limit" min="0" max="180" value="30" />
             </label>
             <button id="btn-save-budgets" class="btn btn-primary">Budgets speichern</button>
           </div>
@@ -587,6 +561,22 @@
               📁 Vault-Ordner direkt verknüpfen (Chrome/Edge/Arc)
             </button>
             <span id="obsidian-dir-status" class="panel-hint">Kein lokaler Ordner verknüpft (Standard: obsidian:// URI &amp; .md Download)</span>
+          </div>
+
+          <h3 class="modal-section-title">4. Darstellungs- &amp; Feed-Filter</h3>
+          <div class="quick-toggles">
+            <label class="toggle-chip" title="Entfernt Emojis, GROSSBUCHSTABEN und Clickbait aus Videotiteln">
+              <input type="checkbox" id="toggle-calm-titles" checked />
+              <span>Ruhige Titel</span>
+            </label>
+            <label class="toggle-chip" title="Zeigt Thumbnails entsättigt in Graustufen bis zum Hover">
+              <input type="checkbox" id="toggle-calm-thumbs" checked />
+              <span>Graustufen-Thumbnails</span>
+            </label>
+            <label class="toggle-chip" title="Begrenzt Serien-Kanäle auf max. 2 Videos auf der Startseite">
+              <input type="checkbox" id="toggle-flood-brake" checked />
+              <span>Max. 2 Videos pro Kanal</span>
+            </label>
           </div>
         </div>
 
