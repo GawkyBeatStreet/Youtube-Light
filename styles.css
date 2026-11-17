@@ -1,28 +1,29 @@
 :root {
-  --bg-app: #f5f5f7;
-  --bg-surface: #ffffff;
-  --bg-elevated: #f9f9fb;
-  --bg-subtle: #efeff4;
-  --bg-input: #f5f5f7;
-  --border-subtle: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.14);
-  --text-primary: #1d1d1f;
-  --text-secondary: #6e6e73;
-  --text-muted: #86868b;
-  --apple-blue: #0071e3;
-  --apple-blue-hover: #0077ed;
-  --emerald: #1b7f4b;
-  --emerald-soft: rgba(27, 127, 75, 0.09);
-  --emerald-border: rgba(27, 127, 75, 0.24);
-  --amber: #b25000;
-  --amber-soft: rgba(245, 158, 11, 0.13);
-  --amber-border: rgba(217, 119, 6, 0.28);
-  --obsidian: #6e42c1;
-  --obsidian-soft: rgba(110, 66, 193, 0.09);
-  --obsidian-border: rgba(110, 66, 193, 0.26);
-  --danger: #d70015;
-  --shadow-card: 0 2px 14px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.03);
-  --shadow-hover: 0 10px 30px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.04);
+  color-scheme: dark;
+  --bg-app: #0b0b0d;
+  --bg-surface: #1c1c1e;
+  --bg-elevated: #2c2c2e;
+  --bg-subtle: #242426;
+  --bg-input: #141416;
+  --border-subtle: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text-primary: #f5f5f7;
+  --text-secondary: #a1a1a6;
+  --text-muted: #76767d;
+  --apple-blue: #0a84ff;
+  --apple-blue-hover: #409cff;
+  --emerald: #30d158;
+  --emerald-soft: rgba(48, 209, 88, 0.14);
+  --emerald-border: rgba(48, 209, 88, 0.34);
+  --amber: #ff9f0a;
+  --amber-soft: rgba(255, 159, 10, 0.15);
+  --amber-border: rgba(255, 159, 10, 0.34);
+  --obsidian: #bf5af2;
+  --obsidian-soft: rgba(191, 90, 242, 0.15);
+  --obsidian-border: rgba(191, 90, 242, 0.34);
+  --danger: #ff453a;
+  --shadow-card: 0 2px 16px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-hover: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
   --radius-sm: 10px;
   --radius-md: 16px;
   --radius-lg: 22px;
@@ -62,7 +63,7 @@ textarea {
   position: sticky;
   top: 0;
   z-index: 40;
-  background: rgba(251, 251, 253, 0.82);
+  background: rgba(18, 18, 20, 0.8);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 1px solid var(--border-subtle);
@@ -89,8 +90,9 @@ textarea {
   width: 36px;
   height: 36px;
   border-radius: 10px;
-  background: #1d1d1f;
-  color: #ffffff;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
   font-weight: 700;
   font-size: 0.88rem;
   display: grid;
@@ -113,7 +115,7 @@ textarea {
 /* Apple Segmented Control für Modus-Umschaltung */
 .mode-switcher {
   display: inline-flex;
-  background: rgba(118, 118, 128, 0.12);
+  background: rgba(118, 118, 128, 0.24);
   border-radius: 999px;
   padding: 3px;
   gap: 2px;
@@ -149,9 +151,9 @@ textarea {
 }
 
 .mode-btn.active {
-  background: #ffffff;
+  background: var(--bg-elevated);
   color: var(--text-primary);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.09), 0 1px 1px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35), 0 1px 1px rgba(0, 0, 0, 0.2);
 }
 
 .mode-btn.active[data-mode="learning"] span {
@@ -180,12 +182,12 @@ textarea {
   padding: 7px 14px;
   border-radius: 999px;
   border: 1px solid var(--border-subtle);
-  background: #ffffff;
+  background: var(--bg-surface);
   font-size: 0.81rem;
   font-weight: 600;
   color: var(--text-primary);
   cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
   transition: all 0.18s ease;
 }
 
@@ -195,7 +197,7 @@ textarea {
 
 .timer-pill.learning {
   border-color: var(--emerald-border);
-  background: rgba(27, 127, 75, 0.06);
+  background: var(--emerald-soft);
 }
 
 .timer-pill.entertainment {
@@ -204,8 +206,8 @@ textarea {
 }
 
 .timer-pill.expired {
-  border-color: rgba(215, 0, 21, 0.35);
-  background: rgba(215, 0, 21, 0.07);
+  border-color: rgba(255, 69, 58, 0.45);
+  background: rgba(255, 69, 58, 0.14);
   color: var(--danger);
 }
 
@@ -242,7 +244,7 @@ textarea {
   font-size: 0.7rem;
   padding: 2px 7px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.1);
   color: var(--text-secondary);
 }
 
@@ -298,17 +300,17 @@ textarea {
 
 .nav-tab:hover {
   color: var(--text-primary);
-  background: rgba(0, 0, 0, 0.045);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .nav-tab.active {
-  background: #1d1d1f;
-  color: #ffffff;
-  font-weight: 500;
+  background: #f5f5f7;
+  color: #111113;
+  font-weight: 600;
 }
 
 .pill-count {
-  background: rgba(0, 0, 0, 0.07);
+  background: rgba(255, 255, 255, 0.12);
   padding: 1px 6px;
   border-radius: 999px;
   font-size: 0.71rem;
@@ -316,7 +318,7 @@ textarea {
 }
 
 .nav-tab.active .pill-count {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.14);
 }
 
 .quick-toggles {
@@ -332,7 +334,7 @@ textarea {
   gap: 6px;
   padding: 5px 11px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(44, 44, 46, 0.72);
   border: 1px solid var(--border-subtle);
   font-size: 0.76rem;
   font-weight: 500;
@@ -378,15 +380,15 @@ textarea {
 }
 
 .btn-secondary {
-  background: #ffffff;
+  background: var(--bg-elevated);
   border-color: var(--border-strong);
   color: var(--text-primary);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 .btn-secondary:hover {
-  background: var(--bg-elevated);
-  border-color: rgba(0, 0, 0, 0.24);
+  background: #3a3a3c;
+  border-color: rgba(255, 255, 255, 0.28);
 }
 
 .btn-ghost {
@@ -395,7 +397,7 @@ textarea {
 }
 
 .btn-ghost:hover {
-  background: rgba(0, 0, 0, 0.05);
+  background: rgba(255, 255, 255, 0.09);
   color: var(--text-primary);
 }
 
@@ -440,7 +442,7 @@ input[type="url"],
 input[type="password"],
 input[type="number"],
 textarea {
-  background: var(--bg-surface);
+  background: var(--bg-input);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   padding: 9px 13px;
@@ -455,7 +457,7 @@ textarea {
 input:focus,
 textarea:focus {
   border-color: var(--apple-blue);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.15);
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.24);
 }
 
 /* --- MAIN LAYOUT --- */
@@ -582,7 +584,7 @@ textarea:focus {
   position: absolute;
   inset: 0;
   z-index: 20;
-  background: rgba(245, 245, 247, 0.92);
+  background: rgba(11, 11, 13, 0.86);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   display: flex;
@@ -594,7 +596,7 @@ textarea:focus {
 .focus-overlay-card {
   max-width: 520px;
   width: 100%;
-  background: #ffffff;
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-hover);
@@ -824,7 +826,7 @@ textarea:focus {
 .chapter-item {
   width: 100%;
   text-align: left;
-  background: #ffffff;
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   padding: 8px 10px;
@@ -833,13 +835,14 @@ textarea:focus {
   gap: 10px;
   cursor: pointer;
   font-size: 0.82rem;
+  color: var(--text-primary);
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .chapter-item:hover,
 .chapter-item.active {
   border-color: var(--apple-blue);
-  background: rgba(0, 113, 227, 0.06);
+  background: rgba(10, 132, 255, 0.14);
 }
 
 .chapter-time {
@@ -857,7 +860,7 @@ textarea:focus {
 }
 
 .note-item {
-  background: #ffffff;
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   padding: 8px 10px;
@@ -869,8 +872,8 @@ textarea:focus {
 }
 
 .note-jump-btn {
-  background: rgba(0, 113, 227, 0.08);
-  border: 1px solid rgba(0, 113, 227, 0.22);
+  background: rgba(10, 132, 255, 0.14);
+  border: 1px solid rgba(10, 132, 255, 0.3);
   color: var(--apple-blue);
   border-radius: 6px;
   padding: 2px 7px;
@@ -912,7 +915,7 @@ textarea:focus {
 
 .ai-summary-box {
   margin-top: 10px;
-  background: #ffffff;
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   padding: 12px;
@@ -936,7 +939,7 @@ textarea:focus {
 }
 
 .learning-banner {
-  background: #ffffff;
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
@@ -944,7 +947,8 @@ textarea:focus {
 }
 
 body.mode-entertainment .learning-banner {
-  background: linear-gradient(180deg, #ffffff 0%, #fffaf2 100%);
+  background: linear-gradient(180deg, #1c1c1e 0%, #241d14 100%);
+  border-color: var(--amber-border);
 }
 
 .section-banner h1,
@@ -996,7 +1000,7 @@ body.mode-entertainment .learning-banner {
 
 /* Lernziel-Chips */
 .goals-bar {
-  background: #ffffff;
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-card);
@@ -1021,8 +1025,8 @@ body.mode-entertainment .learning-banner {
 }
 
 .goal-chip {
-  background: var(--bg-app);
-  border: 1px solid transparent;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   padding: 6px 13px;
   border-radius: 999px;
@@ -1033,14 +1037,15 @@ body.mode-entertainment .learning-banner {
 }
 
 .goal-chip:hover {
-  background: #e8e8ed;
+  background: #3a3a3c;
   color: var(--text-primary);
 }
 
 .goal-chip.active {
-  background: #1d1d1f;
-  color: #ffffff;
-  font-weight: 500;
+  background: #f5f5f7;
+  border-color: #f5f5f7;
+  color: #111113;
+  font-weight: 600;
 }
 
 .filter-bar {
@@ -1085,7 +1090,7 @@ body.mode-entertainment .learning-banner {
 }
 
 .discover-status-box {
-  background: #ffffff;
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-card);
@@ -1107,8 +1112,8 @@ body.mode-entertainment .learning-banner {
 }
 
 .discover-query-pill {
-  background: rgba(0, 113, 227, 0.08);
-  border: 1px solid rgba(0, 113, 227, 0.18);
+  background: rgba(10, 132, 255, 0.14);
+  border: 1px solid rgba(10, 132, 255, 0.28);
   border-radius: 999px;
   padding: 4px 11px;
   font-size: 0.76rem;
@@ -1170,7 +1175,7 @@ body.mode-entertainment .learning-banner {
 .video-thumb {
   position: relative;
   aspect-ratio: 16 / 9;
-  background: #e5e5ea;
+  background: #141416;
   cursor: pointer;
   overflow: hidden;
 }
@@ -1242,14 +1247,15 @@ body.calm-thumbnails .video-card:hover .video-thumb img {
   position: absolute;
   left: 10px;
   top: 10px;
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(28, 28, 30, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   backdrop-filter: blur(8px);
   color: var(--text-primary);
   padding: 3px 9px;
   border-radius: 999px;
   font-size: 0.71rem;
   font-weight: 600;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
 }
 
 .video-body {
@@ -1326,7 +1332,7 @@ body.calm-thumbnails .video-card:hover .video-thumb img {
 
 /* Sperrbildschirm */
 .lock-screen {
-  background: #ffffff;
+  background: var(--bg-surface);
   border: 1px solid var(--amber-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
@@ -1664,9 +1670,9 @@ body.calm-thumbnails .video-card:hover .video-thumb img {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: rgba(29, 29, 31, 0.36);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(0, 0, 0, 0.66);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1676,10 +1682,10 @@ body.calm-thumbnails .video-card:hover .video-thumb img {
 .modal-card {
   max-width: 640px;
   width: 100%;
-  background: #ffffff;
-  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
   padding: 28px;
   max-height: 90vh;
   overflow-y: auto;
@@ -1770,7 +1776,7 @@ body.calm-thumbnails .video-card:hover .video-thumb img {
 }
 
 .setup-guide code {
-  background: #ffffff;
+  background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   padding: 1px 6px;
   border-radius: 5px;
@@ -1803,7 +1809,7 @@ body.calm-thumbnails .video-card:hover .video-thumb img {
   height: 22px;
   border-radius: 999px;
   border: 1px solid var(--border-subtle);
-  background: #ffffff;
+  background: var(--bg-elevated);
   color: var(--text-muted);
   font-size: 0.78rem;
   line-height: 1;
@@ -1815,9 +1821,9 @@ body.calm-thumbnails .video-card:hover .video-thumb img {
 }
 
 .goal-chip-remove:hover {
-  background: #ffeceb;
-  color: #c9342a;
-  border-color: rgba(255, 59, 48, 0.35);
+  background: rgba(255, 69, 58, 0.2);
+  color: var(--danger);
+  border-color: rgba(255, 69, 58, 0.45);
 }
 
 .channel-topic-row {
@@ -1841,7 +1847,7 @@ body.calm-thumbnails .video-card:hover .video-thumb img {
 .channel-topic-input:focus {
   outline: none;
   border-color: var(--apple-blue);
-  background: #ffffff;
+  background: var(--bg-elevated);
 }
 
 .feed-controls {
