@@ -2423,25 +2423,46 @@ async function sendGeminiRequest(targetModel, promptText, { expectJson = false, 
   });
 }
 
+const GEMINI_FALLBACK_ORDER = ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.8-flash'];
+
 async function callGeminiApi(promptText, { expectJson = false, temperature = 0.3 } = {}) {
   const apiKey = (state.apiConfig.geminiKey || '').trim();
   if (!apiKey) {
-    throw new Error('Kein Gemini API Key hinterlegt. Bitte im Modal „🔗 Sync, Gemini & Obsidian“ eintragen.');
+    throw new Error('Kein Gemini API Key hinterlegt. Bitte im Modal „⚙ Sync & Filter“ eintragen.');
   }
-  let model = normalizeGeminiModel(state.apiConfig.geminiModel);
-  let res = await sendGeminiRequest(model, promptText, { expectJson, temperature, apiKey });
+  const preferred = normalizeGeminiModel(state.apiConfig.geminiModel);
+  const candidates = [preferred, ...GEMINI_FALLBACK_ORDER.filter((m) => m !== preferred)];
 
-  if (res.status === 404 && model !== DEFAULT_GEMINI_MODEL) {
-    model = DEFAULT_GEMINI_MODEL;
-    state.apiConfig.geminiModel = model;
-    saveState();
-    updateSyncUi();
-    res = await sendGeminiRequest(model, promptText, { expectJson, temperature, apiKey });
+  let res = null;
+  let lastStatus = 0;
+  let lastErrText = '';
+
+  for (let i = 0; i < candidates.length; i++) {
+    const targetModel = candidates[i];
+    res = await sendGeminiRequest(targetModel, promptText, { expectJson, temperature, apiKey });
+    if (res.ok) {
+      if (i > 0 && res.status === 200 && lastStatus === 404 && targetModel === DEFAULT_GEMINI_MODEL) {
+        state.apiConfig.geminiModel = targetModel;
+        saveState();
+        updateSyncUi();
+      }
+      break;
+    }
+
+    lastStatus = res.status;
+    lastErrText = await res.text();
+    if (res.status === 404 || res.status === 503 || res.status === 429) {
+      if (i < candidates.length - 1) {
+        await new Promise((r) => setTimeout(r, 350));
+        continue;
+      }
+    } else {
+      break;
+    }
   }
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gemini API Fehler (${res.status}): ${errText.slice(0, 180)}`);
+  if (!res || !res.ok) {
+    throw new Error(`Gemini API Fehler (${lastStatus || res?.status || 0}): ${lastErrText.slice(0, 180)}`);
   }
 
   const data = await res.json();
@@ -2776,12 +2797,17 @@ async function runKnowledgeDiscovery() {
   try {
     let queries = [topic];
     let focusAngle = '';
+    let geminiFallbackReason = '';
 
     if (hasGemini) {
       setDiscoverStatus('⏳ <strong>Schritt 1/3:</strong> Gemini formuliert Anti-Clickbait-Fachsuchanfragen…');
-      const expanded = await generateDiscoveryQueriesWithGemini(topic, lengthPref, langPref);
-      queries = expanded.queries;
-      focusAngle = expanded.focusAngle;
+      try {
+        const expanded = await generateDiscoveryQueriesWithGemini(topic, lengthPref, langPref);
+        queries = expanded.queries;
+        focusAngle = expanded.focusAngle;
+      } catch (gemErr) {
+        geminiFallbackReason = gemErr.message || 'Gemini temporär nicht erreichbar';
+      }
     }
 
     setDiscoverStatus(
@@ -2886,34 +2912,40 @@ async function runKnowledgeDiscovery() {
       return;
     }
 
-    if (hasGemini) {
+    if (hasGemini && !geminiFallbackReason) {
       setDiscoverStatus('⏳ <strong>Schritt 3/3:</strong> Gemini prüft Informationsdichte, menschliche Authentizität &amp; filtert KI-Sprecher/Clickbait aus…');
-      const aiScores = await scoreDiscoveryCandidatesWithGemini(topic, candidates.slice(0, 12), lengthPref);
-      const scoreMap = {};
-      aiScores.forEach((s) => {
-        if (s && s.id) scoreMap[s.id] = s;
-      });
+      try {
+        const aiScores = await scoreDiscoveryCandidatesWithGemini(topic, candidates.slice(0, 12), lengthPref);
+        const scoreMap = {};
+        aiScores.forEach((s) => {
+          if (s && s.id) scoreMap[s.id] = s;
+        });
 
-      candidates = candidates
-        .map((c) => {
-          const ai = scoreMap[c.id];
-          if (ai?.isClickbait) return null;
-          if (state.filterAiSlop && ai?.isAiVoiceOrSlop) return null;
-          const baseDensity = typeof ai?.densityScore === 'number' ? ai.densityScore : computeFocusScore(c);
-          const humanScore = typeof ai?.humanAuthenticityScore === 'number' ? ai.humanAuthenticityScore : baseDensity;
-          const combinedScore = state.filterAiSlop
-            ? Math.round(baseDensity * 0.6 + humanScore * 0.4) - detectAiVoiceSignals(c).suspicionScore
-            : baseDensity;
-          return {
-            ...c,
-            aiDensityScore: Math.max(0, combinedScore),
-            focusScore: Math.max(0, combinedScore),
-            densityTag: ai?.densityTag || `Dichte ${baseDensity}`,
-            whyRecommended: ai?.reason || 'Durch Gemini-Informationsdichte-Filter ausgewählt.'
-          };
-        })
-        .filter(Boolean);
-    } else {
+        candidates = candidates
+          .map((c) => {
+            const ai = scoreMap[c.id];
+            if (ai?.isClickbait) return null;
+            if (state.filterAiSlop && ai?.isAiVoiceOrSlop) return null;
+            const baseDensity = typeof ai?.densityScore === 'number' ? ai.densityScore : computeFocusScore(c);
+            const humanScore = typeof ai?.humanAuthenticityScore === 'number' ? ai.humanAuthenticityScore : baseDensity;
+            const combinedScore = state.filterAiSlop
+              ? Math.round(baseDensity * 0.6 + humanScore * 0.4) - detectAiVoiceSignals(c).suspicionScore
+              : baseDensity;
+            return {
+              ...c,
+              aiDensityScore: Math.max(0, combinedScore),
+              focusScore: Math.max(0, combinedScore),
+              densityTag: ai?.densityTag || `Dichte ${baseDensity}`,
+              whyRecommended: ai?.reason || 'Durch Gemini-Informationsdichte-Filter ausgewählt.'
+            };
+          })
+          .filter(Boolean);
+      } catch (gemErr) {
+        geminiFallbackReason = gemErr.message || 'Gemini temporär überlastet';
+      }
+    }
+
+    if (!hasGemini || geminiFallbackReason) {
       candidates = candidates.map((c) => {
         const s = computeFocusScore(c);
         return {
@@ -2921,7 +2953,7 @@ async function runKnowledgeDiscovery() {
           aiDensityScore: s,
           focusScore: s,
           densityTag: c.chapters.length >= 2 ? `${c.chapters.length} Kapitel · ${Math.round(c.durationSec / 60)} Min.` : `${Math.round(c.durationSec / 60)} Min.`,
-          whyRecommended: `Like-Quote ${c.likeRatioPercent}% · ${c.chapters.length} Kapitel · Anti-Clickbait geprüft.`
+          whyRecommended: `Like-Quote ${c.likeRatioPercent}% · ${c.chapters.length} Kapitel · Anti-Clickbait & KI-Filter geprüft.`
         };
       });
     }
@@ -2930,13 +2962,16 @@ async function runKnowledgeDiscovery() {
     const top5 = candidates.slice(0, 5);
 
     state.discoveryResults = top5;
-    state.discoveryCache[cacheKey] = { ts: Date.now(), queries, results: top5 };
+    if (!geminiFallbackReason) {
+      state.discoveryCache[cacheKey] = { ts: Date.now(), queries, results: top5 };
+    }
     saveState();
     renderDiscoveryResults();
 
     setDiscoverStatus(
-      `<strong>${top5.length} hochdichte Videos außerhalb deiner Abos kuratiert</strong>` +
-        (focusAngle ? ` — ${escapeHtml(focusAngle)}` : '') +
+      (geminiFallbackReason
+        ? `<strong>${top5.length} Videos direkt über YouTube &amp; lokalen Filter geladen</strong> (Google Gemini meldete temporäre Überlastung — nächster Versuch nutzt Gemini automatisch wieder)`
+        : `<strong>${top5.length} Videos außerhalb deiner Abos kuratiert</strong>` + (focusAngle ? ` — ${escapeHtml(focusAngle)}` : '')) +
         `<div class="discover-query-pills">${queries.map((q) => `<span class="discover-query-pill">${escapeHtml(q)}</span>`).join('')}</div>`
     );
   } catch (err) {
