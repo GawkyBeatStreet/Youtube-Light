@@ -149,6 +149,7 @@ function loadState() {
     aiSummaries: {},
     discoveryResults: [],
     discoveryCache: {},
+    recentDiscoveryChannels: [],
     blockedDiscoveryChannels: [],
     budgets: {
       learningGoalMin: 45,
@@ -191,6 +192,7 @@ function loadState() {
       hideWatched: parsed.hideWatchedDefaultV2 ? parsed.hideWatched : true,
       hideWatchedDefaultV2: true,
       customGoals: Array.isArray(parsed.customGoals) ? parsed.customGoals : [],
+      recentDiscoveryChannels: Array.isArray(parsed.recentDiscoveryChannels) ? parsed.recentDiscoveryChannels : [],
       playbackProgress:
         parsed.playbackProgress && typeof parsed.playbackProgress === 'object' ? parsed.playbackProgress : {},
       blockedShorts: Array.isArray(parsed.blockedShorts) ? parsed.blockedShorts : [],
@@ -273,6 +275,7 @@ const els = {
   discoverQueryInput: document.getElementById('discover-query-input'),
   discoverLengthPref: document.getElementById('discover-length-pref'),
   discoverLangPref: document.getElementById('discover-lang-pref'),
+  discoverFreshnessPref: document.getElementById('discover-freshness-pref'),
   btnRunDiscovery: document.getElementById('btn-run-discovery'),
   discoverGoalPills: document.getElementById('discover-goal-pills'),
   discoverDirectUrl: document.getElementById('discover-direct-url'),
@@ -436,7 +439,12 @@ const AI_EXPLICIT_PATTERNS = [
   /\bki[- ]generiert\b/i,
   /\bmit ki erstellt\b/i,
   /\bautomatisch vertont\b/i,
-  /\bsynthetische stimme\b/i
+  /\bsynthetische stimme\b/i,
+  /\bstoryblocks\b/i,
+  /\benvato elements\b/i,
+  /\bstock footage\b/i,
+  /\bcopyright disclaimer under section 107\b/i,
+  /\bfor copyright matters\b/i
 ];
 
 const AI_SOFT_PATTERNS = [
@@ -444,17 +452,31 @@ const AI_SOFT_PATTERNS = [
   /alles was du wissen musst in \d+ min/i,
   /\bcomplete history of .+ in \d+ minutes\b/i,
   /\bai summary\b/i,
-  /\bki[- ]zusammenfassung\b/i
+  /\bki[- ]zusammenfassung\b/i,
+  /\bwissenswert\b/i,
+  /\bfaktenwelt\b/i,
+  /\btop\s*\d+\b/i,
+  /\b\d+\s+(?:dinge|fakten|gründe|fehler|geheimnisse|facts|reasons|things|secrets)\b/i,
+  /\bwarum\s+niemand\b/i,
+  /\bdas\s+geheimnis\b/i,
+  /\bschockierend/i,
+  /\bunglaublich/i,
+  /\byou\s+won'?t\s+believe\b/i,
+  /\bnobody\s+tells\s+you\b/i
 ];
 
-function detectAiVoiceSignals(video) {
+function detectAiVoiceSignals(video, channelInfo = null) {
   const tags = Array.isArray(video?.tags) ? video.tags.join(' ') : '';
-  const text = `${video?.originalTitle || ''} ${video?.channelName || ''} ${video?.description || ''} ${tags}`;
+  const chDesc = channelInfo?.description || video?.channelDescription || '';
+  const chVideos = Number(channelInfo?.videoCount || video?.channelVideoCount || 0);
+  const text = `${video?.originalTitle || ''} ${video?.channelName || ''} ${video?.description || ''} ${tags} ${chDesc}`;
   const isExplicitAi = AI_EXPLICIT_PATTERNS.some((rx) => rx.test(text));
   const softHits = AI_SOFT_PATTERNS.filter((rx) => rx.test(text)).length;
+  const massUploadClue = chVideos >= 500 && softHits >= 1 ? 15 : 0;
   return {
     isExplicitAi,
-    suspicionScore: (isExplicitAi ? 45 : 0) + softHits * 18
+    isHighDopamineTrivia: softHits >= 2,
+    suspicionScore: (isExplicitAi ? 45 : 0) + softHits * 18 + massUploadClue
   };
 }
 
@@ -2612,8 +2634,8 @@ function renderDiscoveryResults() {
               <button class="btn btn-secondary" data-sub-discover="${escapeHtml(v.id)}" ${isAlreadySub ? 'disabled' : ''}>
                 ${isAlreadySub ? '✓ In deinen Abos' : '+ Lern-Kanal'}
               </button>
-              <button class="btn btn-ghost" data-block-discover="${escapeHtml(v.channelHandle)}" title="Kanal dauerhaft aus Entdeckungen ausblenden">
-                ✕
+              <button class="btn btn-ghost" data-block-discover="${escapeHtml(v.channelHandle)}" title="Kanal dauerhaft aus allen Entdeckungen blockieren">
+                🚫 Kanal blockieren
               </button>
             </div>
           </div>
@@ -2668,7 +2690,9 @@ function renderDiscoveryResults() {
   });
 }
 
-async function generateDiscoveryQueriesWithGemini(topic, lengthPref, langPref) {
+async function generateDiscoveryQueriesWithGemini(topic, lengthPref, langPref, freshnessPref = 'auto') {
+  const todayStr = getDateKey();
+  const currentYear = new Date().getFullYear();
   const lengthHint =
     lengthPref === 'compact'
       ? 'kompakte, hochdichte Erklärvideos (ca. 6–20 Min., keine stundenlangen Vorträge/Podcasts)'
@@ -2679,53 +2703,62 @@ async function generateDiscoveryQueriesWithGemini(topic, lengthPref, langPref) {
     langPref === 'de' ? 'nur deutsche Suchbegriffe' : langPref === 'en' ? 'nur englische Suchbegriffe' : '1 deutscher und 1–2 englische Suchbegriffe';
 
   const prompt = [
-    `Erstelle 2 bis 3 präzise YouTube-Suchanfragen zum Thema: "${topic}".`,
-    `Ziel: Ein guter Mix aus spannenden, gerne auch unterhaltsam erzählten Wissensvideos, Video-Essays, visuellen Erklärungen und fundierten Analysen (${lengthHint}) von ECHTEN menschlichen Creatorn — also nicht nur trockene Vorlesungen, aber ohne KI-Sprecher/Faceless-AI und ohne leeres Clickbait.`,
+    `Heutiges Datum: ${todayStr}. Erstelle 2 bis 3 präzise, vielfältige YouTube-Suchanfragen zum Thema: "${topic}".`,
+    `Ziel: Ein guter Mix aus spannenden, gut erzählten Wissensvideos, Video-Essays, visuellen Erklärungen und Analysen (${lengthHint}) von ECHTEN menschlichen Creatorn — ruhiger Erzählfluss ohne schnelle Dopamin-Cuts/Musik-Gewitter, ohne KI-Sprecher/Faceless-AI und ohne leeres Clickbait.`,
     `Sprache: ${langHint}.`,
-    'Vermeide Begriffe wie "schnell reich", "krass", "reagiert", "top 10", "podcast clips", "everything you need to know". Nutze je nach Thema Suchbegriffe, die sowohl lebendige Creator/Essays (z. B. "story", "explained", "how", "doku", "deep dive") als auch konkrete Mechanismen/Fallbeispiele abdecken.',
-    'Antworte ausschließlich als JSON-Objekt: {"queries": ["...", "..."], "focusAngle": "kurzer Satz was geprüft wird"}'
+    `Aktualitätshinweis: Falls "${topic}" etwas Aktuelles/Zeitnahes betrifft (z. B. aktuelle Technik/KI-Releases, Politik, Wirtschaftslage, Marktereignisse ${currentYear}), setze "preferRecent": true und nutze bei Bedarf ${currentYear} oder aktuelle Fachbegriffe.`,
+    'Vermeide zwingend Content-Farm-/Listicle-Begriffe wie "wissenswert", "top 10", "fakten", "schnell reich", "krass", "reagiert", "podcast clips", "everything you need to know", "alles was du wissen musst".',
+    'Antworte ausschließlich als JSON-Objekt: {"queries": ["...", "..."], "focusAngle": "kurzer Satz was geprüft wird", "preferRecent": true|false}'
   ].join('\n');
 
   const parsed = await callGeminiApi(prompt, { expectJson: true, temperature: 0.3 });
   const queries = Array.isArray(parsed?.queries) ? parsed.queries.filter(Boolean).slice(0, 3) : [];
+  const defaultRecent = freshnessPref === '30d' || freshnessPref === '365d';
   return {
     queries: queries.length > 0 ? queries : [topic],
-    focusAngle: parsed?.focusAngle || ''
+    focusAngle: parsed?.focusAngle || '',
+    preferRecent: typeof parsed?.preferRecent === 'boolean' ? parsed.preferRecent : defaultRecent
   };
 }
 
-async function scoreDiscoveryCandidatesWithGemini(topic, candidates, lengthPref) {
+async function scoreDiscoveryCandidatesWithGemini(topic, candidates, lengthPref, preferRecent = false) {
   const compactList = candidates.map((c) => ({
     id: c.id,
     title: c.originalTitle,
     channel: c.channelName,
+    publishedAt: (c.publishedAt || '').slice(0, 10),
     minutes: Math.round(c.durationSec / 60),
     chaptersCount: c.chapters.length,
     likeRatioPercent: c.likeRatioPercent,
     tags: Array.isArray(c.tags) ? c.tags.slice(0, 8) : [],
-    descExcerpt: (c.description || '').slice(0, 700)
+    channelVideoCount: c.channelVideoCount || 0,
+    channelBioExcerpt: (c.channelDescription || '').slice(0, 260),
+    descExcerpt: (c.description || '').slice(0, 600)
   }));
 
   const lengthPreferenceText =
     lengthPref === 'compact'
-      ? 'Der Nutzer bevorzugt ausdrücklich kompakte Videos mit hoher Informationsdichte (Idealbereich: 6–22 Min.) gegenüber unnötig langen 60–90-Minuten-Vorträgen.'
+      ? 'Der Nutzer bevorzugt kompakte Videos (Idealbereich: 6–22 Min.) statt künstlich gestreckter Videos.'
       : 'Der Nutzer schätzt strukturierte Erklärungen mit hoher Informationsdichte pro Minute.';
 
   const prompt = [
-    `Bewerte diese realen YouTube-Videos für das Thema "${topic}".`,
+    `Heutiges Datum: ${getDateKey()}. Bewerte diese realen YouTube-Videos für das Thema "${topic}".`,
     lengthPreferenceText,
+    preferRecent
+      ? 'AKTUALITÄT WICHTIG: Dieses Thema profitiert von aktuellen Entwicklungen — bevorzuge Videos aus den letzten Monaten gegenüber veralteten Uploads.'
+      : '',
     'GUTER MIX STATT NUR TROCKENE VORTRÄGE:',
-    '- Videos dürfen ausdrücklich unterhaltsam, gut geschnitten, witzig oder stark erzählt sein (gutes Storytelling / Edutainment), SOLANGE ein echter Mehrwert und konkretes Wissen hängen bleiben.',
-    '- Bevorzuge einen ausgewogenen Mix aus mitreißenden Video-Essays, Praxisbeispielen und tiefen Analysen — nicht bloß akademische Frontalvorträge.',
-    'EXTREM WICHTIG — KI-SPRECHER & FACELESS-AI AUSSORTIEREN:',
-    '- Der Nutzer HASST Videos mit KI-Sprecher / Text-to-Speech (z. B. ElevenLabs, NotebookLM, Synthesia, InVideo) oder automatisierte Faceless-AI-Massenware — selbst dann, wenn das Video faktisch dicht klingt oder viele Kapitel hat!',
-    '- Setze isAiVoiceOrSlop: true bei jedem Video, dessen Titel, Kanalname, Tags oder Beschreibung nach KI-Sprecher, generischer AI-Zusammenfassung, Content-Farm oder fehlender menschlicher Autorenschaft aussieht.',
-    '- Sortiere außerdem hohles Clickbait ohne Substanz, reine Verkaufs-Funnels und unnötig gestreckte Laber-Videos aus (isClickbait: true).',
+    '- Videos dürfen ausdrücklich unterhaltsam, witzig oder stark erzählt sein (gutes Storytelling / Edutainment), SOLANGE ein echter Mehrwert hängen bleibt und der Ton ruhig/unaufgeregt bleibt.',
+    'STRENG AUSSORTIEREN — KI-SPRECHER, CONTENT-FARMEN & DOPAMIN-CUTS:',
+    '- Setze isAiVoiceOrSlop: true bei KI-Sprechern / TTS (ElevenLabs, NotebookLM, Synthesia, InVideo), Stock-Footage-Farmen (Storyblocks/Envato/Section-107-Disclaimer ohne persönlichen Autor) sowie typischen Faceless-Faktenkanälen (z. B. Stil „Wissenswert / Top 10 / 7 Geheimnisse“).',
+    '- Setze isHighDopamineOrClickbait: true bei reißerischem Clickbait, schnellen Dopamin-Montagen, Dauer-Musik-Hype, oberflächlichen Listicles oder Verkaufs-Funnels.',
     'Antworte ausschließlich als JSON-Array mit einem Objekt pro Video-ID:',
-    '[{"id": "...", "densityScore": 0-99, "humanAuthenticityScore": 0-99, "isClickbait": true|false, "isAiVoiceOrSlop": true|false, "densityTag": "z.B. Stark erzählt · 14 Min.", "reason": "1 ruhiger deutscher Satz, was man mitnimmt und warum der Stil passt"}]',
+    '[{"id": "...", "densityScore": 0-99, "humanAuthenticityScore": 0-99, "calmPacingScore": 0-99, "isClickbait": true|false, "isHighDopamineOrClickbait": true|false, "isAiVoiceOrSlop": true|false, "densityTag": "z.B. Ruhig & stark · 14 Min.", "reason": "1 ruhiger deutscher Satz, was man mitnimmt"}]',
     '',
     JSON.stringify(compactList)
-  ].join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   const scored = await callGeminiApi(prompt, { expectJson: true, temperature: 0.2 });
   return Array.isArray(scored) ? scored : [];
@@ -2740,6 +2773,7 @@ async function runKnowledgeDiscovery() {
 
   const lengthPref = els.discoverLengthPref?.value || 'compact';
   const langPref = els.discoverLangPref?.value || 'all';
+  const freshnessPref = els.discoverFreshnessPref?.value || 'auto';
   const hasYtAuth = Boolean(oauthAccessToken || (state.apiConfig.apiKey || '').trim());
   const hasGemini = Boolean((state.apiConfig.geminiKey || '').trim());
 
@@ -2778,7 +2812,7 @@ async function runKnowledgeDiscovery() {
     return;
   }
 
-  const cacheKey = `${topic.toLowerCase()}|${lengthPref}|${langPref}|${hasGemini ? 'ai' : 'noai'}|${state.filterAiSlop ? 'noai_voice_v3' : 'all_v3'}`;
+  const cacheKey = `${topic.toLowerCase()}|${lengthPref}|${langPref}|${freshnessPref}|${hasGemini ? 'ai' : 'noai'}|${state.filterAiSlop ? 'noai_voice_v4' : 'all_v4'}`;
   const cached = state.discoveryCache?.[cacheKey];
   if (cached && Date.now() - cached.ts < 12 * 60 * 60 * 1000) {
     state.discoveryResults = cached.results;
@@ -2797,21 +2831,25 @@ async function runKnowledgeDiscovery() {
   try {
     let queries = [topic];
     let focusAngle = '';
+    let preferRecent = freshnessPref === '30d' || freshnessPref === '365d';
     let geminiFallbackReason = '';
 
     if (hasGemini) {
-      setDiscoverStatus('⏳ <strong>Schritt 1/3:</strong> Gemini formuliert Anti-Clickbait-Fachsuchanfragen…');
+      setDiscoverStatus('⏳ <strong>Schritt 1/3:</strong> Gemini formuliert vielfältige, aktuelle Suchanfragen…');
       try {
-        const expanded = await generateDiscoveryQueriesWithGemini(topic, lengthPref, langPref);
+        const expanded = await generateDiscoveryQueriesWithGemini(topic, lengthPref, langPref, freshnessPref);
         queries = expanded.queries;
         focusAngle = expanded.focusAngle;
+        if (freshnessPref === 'auto') {
+          preferRecent = Boolean(expanded.preferRecent);
+        }
       } catch (gemErr) {
         geminiFallbackReason = gemErr.message || 'Gemini temporär nicht erreichbar';
       }
     }
 
     setDiscoverStatus(
-      `⏳ <strong>Schritt 2/3:</strong> Suche reale YouTube-Videos ohne Shorts…<div class="discover-query-pills">${queries
+      `⏳ <strong>Schritt 2/3:</strong> Suche vielfältige Kanäle ohne Shorts…<div class="discover-query-pills">${queries
         .map((q) => `<span class="discover-query-pill">${escapeHtml(q)}</span>`)
         .join('')}</div>`
     );
@@ -2821,11 +2859,36 @@ async function runKnowledgeDiscovery() {
     const subChannelIds = new Set(state.channels.map((c) => c.channelId).filter(Boolean));
     const subChannelNames = new Set(state.channels.map((c) => (c.name || '').toLowerCase()));
     const blockedSet = new Set(state.blockedDiscoveryChannels || []);
+    const blockedLower = new Set(Array.from(blockedSet).map((s) => String(s).toLowerCase()));
+
+    const isoDaysAgo = (days) => new Date(Date.now() - days * 86400000).toISOString();
+    const searchPlans = [];
+    const activeQueries = queries.slice(0, 2);
+    if (activeQueries.length === 1) activeQueries.push(topic);
+
+    activeQueries.forEach((q, idx) => {
+      let extra = '';
+      if (freshnessPref === '30d') {
+        extra = `&publishedAfter=${encodeURIComponent(isoDaysAgo(30))}&order=${idx === 1 ? 'date' : 'relevance'}`;
+      } else if (freshnessPref === '365d') {
+        extra = `&publishedAfter=${encodeURIComponent(isoDaysAgo(365))}&order=${idx === 1 ? 'date' : 'relevance'}`;
+      } else if (freshnessPref === 'auto') {
+        if (preferRecent) {
+          extra = idx === 0
+            ? `&publishedAfter=${encodeURIComponent(isoDaysAgo(120))}&order=relevance`
+            : `&publishedAfter=${encodeURIComponent(isoDaysAgo(45))}&order=date`;
+        } else if (idx === 1) {
+          // Auch bei zeitlosen Themen frische Uploads der letzten 12 Monate mit einmischen
+          extra = `&publishedAfter=${encodeURIComponent(isoDaysAgo(365))}&order=relevance`;
+        }
+      }
+      searchPlans.push({ q, extra });
+    });
 
     const foundMap = new Map();
-    for (const q of queries.slice(0, 2)) {
-      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoDuration=${ytDurationParam}${langParam}&maxResults=12&q=${encodeURIComponent(
-        q
+    for (const plan of searchPlans) {
+      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoDuration=${ytDurationParam}${langParam}${plan.extra}&maxResults=25&q=${encodeURIComponent(
+        plan.q
       )}`;
       const searchData = await ytApiFetch(searchUrl);
       (searchData.items || []).forEach((item) => {
@@ -2836,7 +2899,7 @@ async function runKnowledgeDiscovery() {
         const chId = snip.channelId || '';
         const chTitle = snip.channelTitle || '';
         if (subChannelIds.has(chId) || subChannelNames.has(chTitle.toLowerCase())) return;
-        if (blockedSet.has(chId) || blockedSet.has(chTitle)) return;
+        if (blockedSet.has(chId) || blockedSet.has(chTitle) || blockedLower.has(chTitle.toLowerCase())) return;
         if (!foundMap.has(vidId)) {
           foundMap.set(vidId, {
             id: vidId,
@@ -2848,9 +2911,9 @@ async function runKnowledgeDiscovery() {
       });
     }
 
-    const candidateIds = Array.from(foundMap.keys()).slice(0, 20);
+    const candidateIds = Array.from(foundMap.keys()).slice(0, 35);
     if (candidateIds.length === 0) {
-      setDiscoverStatus('Keine neuen Kanäle außerhalb deiner Abos zu diesem Begriff gefunden. Versuche einen etwas breiteren Fachbegriff.');
+      setDiscoverStatus('Keine neuen Kanäle außerhalb deiner Abos in diesem Zeitraum gefunden. Probiere „Alle Jahre“ oder einen breiteren Begriff.');
       state.discoveryResults = [];
       renderDiscoveryResults();
       return;
@@ -2860,11 +2923,32 @@ async function runKnowledgeDiscovery() {
       `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${encodeURIComponent(candidateIds.join(','))}`
     );
 
-    let candidates = (detailsData.items || [])
+    const rawItems = detailsData.items || [];
+    const uniqueChIds = Array.from(new Set(rawItems.map((d) => d.snippet?.channelId).filter(Boolean))).slice(0, 35);
+    const channelInfoMap = {};
+    if (uniqueChIds.length > 0) {
+      try {
+        const chData = await ytApiFetch(
+          `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${encodeURIComponent(uniqueChIds.join(','))}`
+        );
+        (chData.items || []).forEach((ch) => {
+          channelInfoMap[ch.id] = {
+            description: ch.snippet?.description || '',
+            videoCount: parseInt(ch.statistics?.videoCount || '0', 10)
+          };
+        });
+      } catch {
+        // Optionaler 1-Unit-Check: bei Fehler einfach ohne Kanal-Meta fortfahren
+      }
+    }
+
+    let candidates = rawItems
       .map((d) => {
         const durationSec = parseIsoDuration(d.contentDetails?.duration || '');
         const rawTitle = d.snippet?.title || '';
         const desc = d.snippet?.description || '';
+        const chId = d.snippet?.channelId || '';
+        const chMeta = channelInfoMap[chId] || { description: '', videoCount: 0 };
         const chapters = extractChaptersFromDescription(desc);
         const views = parseInt(d.statistics?.viewCount || '0', 10);
         const likes = parseInt(d.statistics?.likeCount || '0', 10);
@@ -2874,11 +2958,14 @@ async function runKnowledgeDiscovery() {
           id: d.id,
           originalTitle: rawTitle,
           calmTitle: calmTitleTransform(rawTitle),
-          channelId: d.snippet?.channelId || '',
-          channelHandle: d.snippet?.channelId || d.snippet?.channelTitle || '',
+          channelId: chId,
+          channelHandle: chId || d.snippet?.channelTitle || '',
           channelName: d.snippet?.channelTitle || 'Unbekannt',
+          channelDescription: chMeta.description,
+          channelVideoCount: chMeta.videoCount,
           durationSec,
           durationText: formatMMSS(durationSec),
+          publishedAt: d.snippet?.publishedAt || '',
           publishedText: d.snippet?.publishedAt ? new Date(d.snippet.publishedAt).toLocaleDateString('de-DE') : '',
           category: 'learning',
           topic,
@@ -2901,40 +2988,68 @@ async function runKnowledgeDiscovery() {
           return false;
         }
         if (v.durationSec < 240) return false; // < 4 Min. herausfiltern (Shorts & Snippets)
-        if (state.filterAiSlop && detectAiVoiceSignals(v).isExplicitAi) return false;
+        if (state.filterAiSlop) {
+          const sig = detectAiVoiceSignals(v);
+          if (sig.isExplicitAi || sig.isHighDopamineTrivia) return false;
+        }
         if (lengthPref === 'compact' && v.durationSec > 1680) return false; // > 28 Min. herausfiltern bei Kompakt-Präferenz
         if (lengthPref === 'medium' && v.durationSec > 2700) return false;
         return true;
       });
 
     if (candidates.length === 0) {
-      setDiscoverStatus('Treffer waren entweder unter 4 Minuten, länger als dein Zeitfenster oder enthielten KI-Sprecher-Signale. Probiere einen anderen Begriff oder „Strukturiert (15–35 Min.)“.');
+      setDiscoverStatus('Treffer waren unter 4 Minuten, außerhalb deines Zeitfensters oder enthielten KI-/Content-Farm-Signale. Probiere einen anderen Zeitraum oder Begriff.');
       return;
     }
 
+    // Pro Kanal maximal 2 Kandidaten ins Scoring geben, damit 1 Kanal nicht alle Slots belegt
+    const perChannelSeen = {};
+    const diversePool = [];
+    for (const c of candidates) {
+      const chKey = (c.channelId || c.channelName || '').toLowerCase();
+      perChannelSeen[chKey] = (perChannelSeen[chKey] || 0) + 1;
+      if (perChannelSeen[chKey] <= 2) diversePool.push(c);
+    }
+
+    const recentSet = new Set((state.recentDiscoveryChannels || []).map((s) => String(s).toLowerCase()));
+    const computeRecencyBonus = (publishedAt) => {
+      if (!publishedAt) return 0;
+      const ageDays = (Date.now() - Date.parse(publishedAt)) / 86400000;
+      if (Number.isNaN(ageDays) || ageDays < 0) return 0;
+      if (ageDays <= 30) return preferRecent ? 16 : 7;
+      if (ageDays <= 120) return preferRecent ? 10 : 4;
+      if (ageDays <= 365) return preferRecent ? 4 : 1;
+      return preferRecent ? -10 : 0;
+    };
+
     if (hasGemini && !geminiFallbackReason) {
-      setDiscoverStatus('⏳ <strong>Schritt 3/3:</strong> Gemini prüft Informationsdichte, menschliche Authentizität &amp; filtert KI-Sprecher/Clickbait aus…');
+      setDiscoverStatus('⏳ <strong>Schritt 3/3:</strong> Gemini prüft Inhalt, Aktualität, Erzählruhe &amp; sortiert KI-Sprecher/Dopamin-Cuts aus…');
       try {
-        const aiScores = await scoreDiscoveryCandidatesWithGemini(topic, candidates.slice(0, 12), lengthPref);
+        const aiScores = await scoreDiscoveryCandidatesWithGemini(topic, diversePool.slice(0, 14), lengthPref, preferRecent);
         const scoreMap = {};
         aiScores.forEach((s) => {
           if (s && s.id) scoreMap[s.id] = s;
         });
 
-        candidates = candidates
+        candidates = diversePool
           .map((c) => {
             const ai = scoreMap[c.id];
-            if (ai?.isClickbait) return null;
+            if (ai?.isClickbait || ai?.isHighDopamineOrClickbait) return null;
             if (state.filterAiSlop && ai?.isAiVoiceOrSlop) return null;
             const baseDensity = typeof ai?.densityScore === 'number' ? ai.densityScore : computeFocusScore(c);
             const humanScore = typeof ai?.humanAuthenticityScore === 'number' ? ai.humanAuthenticityScore : baseDensity;
-            const combinedScore = state.filterAiSlop
-              ? Math.round(baseDensity * 0.6 + humanScore * 0.4) - detectAiVoiceSignals(c).suspicionScore
+            const calmScore = typeof ai?.calmPacingScore === 'number' ? ai.calmPacingScore : humanScore;
+            const chKey = (c.channelHandle || c.channelName || '').toLowerCase();
+            const repeatPenalty = recentSet.has(chKey) ? -14 : 0;
+            const recencyBonus = computeRecencyBonus(c.publishedAt);
+            const blended = state.filterAiSlop
+              ? Math.round(baseDensity * 0.45 + humanScore * 0.3 + calmScore * 0.25) - detectAiVoiceSignals(c).suspicionScore
               : baseDensity;
+            const finalScore = Math.max(0, blended + recencyBonus + repeatPenalty);
             return {
               ...c,
-              aiDensityScore: Math.max(0, combinedScore),
-              focusScore: Math.max(0, combinedScore),
+              aiDensityScore: finalScore,
+              focusScore: finalScore,
               densityTag: ai?.densityTag || `Dichte ${baseDensity}`,
               whyRecommended: ai?.reason || 'Durch Gemini-Informationsdichte-Filter ausgewählt.'
             };
@@ -2946,8 +3061,10 @@ async function runKnowledgeDiscovery() {
     }
 
     if (!hasGemini || geminiFallbackReason) {
-      candidates = candidates.map((c) => {
-        const s = computeFocusScore(c);
+      candidates = diversePool.map((c) => {
+        const chKey = (c.channelHandle || c.channelName || '').toLowerCase();
+        const repeatPenalty = recentSet.has(chKey) ? -14 : 0;
+        const s = Math.max(0, computeFocusScore(c) + computeRecencyBonus(c.publishedAt) + repeatPenalty);
         return {
           ...c,
           aiDensityScore: s,
@@ -2959,7 +3076,32 @@ async function runKnowledgeDiscovery() {
     }
 
     candidates.sort((a, b) => (b.aiDensityScore || 0) - (a.aiDensityScore || 0));
-    const top5 = candidates.slice(0, 5);
+
+    // Strikte Kanal-Vielfalt: max. 1 Video pro Kanal in den Top 5
+    const top5 = [];
+    const chosenChannels = new Set();
+    for (const c of candidates) {
+      const chKey = (c.channelId || c.channelName || '').toLowerCase();
+      if (!chosenChannels.has(chKey)) {
+        chosenChannels.add(chKey);
+        top5.push(c);
+        if (top5.length >= 5) break;
+      }
+    }
+    if (top5.length < 5) {
+      const chosenIds = new Set(top5.map((v) => v.id));
+      for (const c of candidates) {
+        if (!chosenIds.has(c.id)) {
+          top5.push(c);
+          if (top5.length >= 5) break;
+        }
+      }
+    }
+
+    const newlyShown = top5.map((v) => v.channelHandle).filter(Boolean);
+    state.recentDiscoveryChannels = Array.from(
+      new Set([...newlyShown, ...(state.recentDiscoveryChannels || [])])
+    ).slice(0, 20);
 
     state.discoveryResults = top5;
     if (!geminiFallbackReason) {
@@ -2970,8 +3112,8 @@ async function runKnowledgeDiscovery() {
 
     setDiscoverStatus(
       (geminiFallbackReason
-        ? `<strong>${top5.length} Videos direkt über YouTube &amp; lokalen Filter geladen</strong> (Google Gemini meldete temporäre Überlastung — nächster Versuch nutzt Gemini automatisch wieder)`
-        : `<strong>${top5.length} Videos außerhalb deiner Abos kuratiert</strong>` + (focusAngle ? ` — ${escapeHtml(focusAngle)}` : '')) +
+        ? `<strong>${top5.length} Videos von ${chosenChannels.size} Kanälen direkt über YouTube geladen</strong> (Gemini temporär überlastet)`
+        : `<strong>${top5.length} Videos von ${chosenChannels.size} verschiedenen Kanälen</strong>` + (focusAngle ? ` — ${escapeHtml(focusAngle)}` : '')) +
         `<div class="discover-query-pills">${queries.map((q) => `<span class="discover-query-pill">${escapeHtml(q)}</span>`).join('')}</div>`
     );
   } catch (err) {
